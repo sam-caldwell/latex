@@ -1,0 +1,27 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage[backend=biber,style=apa]{biblatex}
+\addbibresource{references.bib}
+
+\title{${TITLE}}
+\author{${AUTHOR}}
+\date{${DATE}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+${ABSTRACT}
+\end{abstract}
+
+\section{Introduction}
+This is a LaTeX article template. Cite something \cite{key}.
+
+\printbibliography
+\end{document}
+

@@ -1,0 +1,19 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage[style=mla,backend=biber]{biblatex}
+\addbibresource{library.bib}
+
+\title{${NAME}}
+\author{${USER}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+This is an MLA sample. Inline citation: \parencite{key}.
+
+\printbibliography
+\end{document}
+

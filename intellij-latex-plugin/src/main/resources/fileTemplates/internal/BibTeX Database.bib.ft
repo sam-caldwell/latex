@@ -1,0 +1,10 @@
+@article{key,
+  title = {${TITLE:An Example Article}},
+  author = {${AUTHOR:First Last}},
+  journal = {${JOURNAL:Journal Name}},
+  year = {${YEAR:2025}},
+  volume = {${VOLUME:1}},
+  number = {${NUMBER:1}},
+  pages = {${PAGES:1--10}},
+}
+

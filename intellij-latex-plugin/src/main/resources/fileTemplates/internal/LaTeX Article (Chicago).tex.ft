@@ -1,0 +1,19 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage[authordate,backend=biber]{biblatex-chicago}
+\addbibresource{library.bib}
+
+\title{${NAME}}
+\author{${USER}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+This is a Chicago Author-Date sample. Inline citation: \parencite{key}. Footnotes: \footcite{key}.
+
+\printbibliography
+\end{document}
+

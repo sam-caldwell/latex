@@ -1,0 +1,20 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[american]{babel}
+\usepackage[style=apa,backend=biber]{biblatex}
+\DeclareLanguageMapping{american}{american-apa}
+\addbibresource{library.bib}
+
+\title{${NAME}}
+\author{${USER}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+This is an APA7 sample. Inline citation: \parencite{key}. Text citation: \textcite{key}.
+
+\printbibliography
+\end{document}
+

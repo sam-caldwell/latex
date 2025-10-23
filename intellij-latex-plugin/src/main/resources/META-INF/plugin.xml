@@ -1,0 +1,62 @@
+<idea-plugin>
+  <id>com.samcaldwell.latex.preview</id>
+  <name>LaTeX Tools + Preview</name>
+  <vendor email="sam@example.com">Sam Caldwell</vendor>
+  <description>
+    LaTeX authoring with live PDF preview, BibTeX support, and templates.
+  </description>
+
+  <idea-version since-build="242"/>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <fileType name="LaTeX" language="LaTeX" extensions="tex" implementationClass="com.samcaldwell.latex.TexFileType"/>
+    <fileType name="BibTeX" language="BibTeX" extensions="bib" implementationClass="com.samcaldwell.latex.BibFileType"/>
+
+    <fileEditorProvider implementation="com.samcaldwell.latex.TexFileEditorProvider"/>
+
+    <completion.contributor language="LaTeX" implementationClass="com.samcaldwell.latex.CitationCompletionContributor"/>
+
+    <fileTemplateGroup implementation="com.samcaldwell.latex.TexFileTemplates"/>
+
+    <projectService serviceImplementation="com.samcaldwell.latex.LatexCompilerService"/>
+    <projectService serviceImplementation="com.samcaldwell.latex.BibLibraryService"/>
+
+    <postStartupActivity implementation="com.samcaldwell.latex.CreateBibOnStartup"/>
+    <postStartupActivity implementation="com.samcaldwell.latex.MissingCitationsWatcher"/>
+    <postStartupActivity implementation="com.samcaldwell.latex.DependencyStartupActivity"/>
+
+    <!-- Inject LaTeX language into Markdown ```latex code fences -->
+    <multiHostInjector implementation="com.samcaldwell.latex.MarkdownLatexFenceInjector"/>
+
+    <toolWindow id="Bibliography"
+                anchor="right"
+                factoryClass="com.samcaldwell.latex.BibliographyToolWindowFactory"
+                icon="/icons/bib.svg"/>
+  </extensions>
+
+  <actions>
+    <action id="com.samcaldwell.latex.RenderLatexFenceAction"
+            class="com.samcaldwell.latex.RenderLatexFenceAction"
+            text="Render LaTeX Code Fence"
+            description="Compile and preview the current LaTeX code fence">
+      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+    </action>
+
+    <action id="com.samcaldwell.latex.BibliographySetupAction"
+            class="com.samcaldwell.latex.BibliographySetupAction"
+            text="Insert Bibliography Setup"
+            description="Insert biblatex setup and library.bib reference">
+      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+
+    <action id="com.samcaldwell.latex.InstallDependenciesAction"
+            class="com.samcaldwell.latex.InstallDependenciesAction"
+            text="Install LaTeX Dependencies"
+            description="Install required LaTeX tools (latexmk/pdflatex, biber) after consent">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>
