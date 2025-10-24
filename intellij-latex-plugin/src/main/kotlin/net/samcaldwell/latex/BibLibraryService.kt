@@ -53,15 +53,807 @@ class BibLibraryService(private val project: Project) {
     val fields: Map<String, String>
   )
 
+  // --- Citation formatting (APA-like) -------------------------------------
+
+  fun formatCitationApa(entry: BibEntry): String? {
+    return when (entry.type.lowercase()) {
+      "patent" -> formatPatentApa(entry)
+      "court case" -> formatCourtCaseApa(entry)
+      "article" -> formatArticleApa(entry)
+      "book" -> formatBookApa(entry)
+      "website" -> formatWebsiteApa(entry)
+      "inproceedings", "conference paper" -> formatInproceedingsApa(entry)
+      else -> null
+    }
+  }
+
+  fun formatCitationMla(entry: BibEntry): String? {
+    return when (entry.type.lowercase()) {
+      "patent" -> formatPatentMla(entry)
+      "court case" -> formatCourtCaseMla(entry)
+      "article" -> formatArticleMla(entry)
+      "book" -> formatBookMla(entry)
+      "website" -> formatWebsiteMla(entry)
+      "inproceedings", "conference paper" -> formatInproceedingsMla(entry)
+      else -> null
+    }
+  }
+
+  fun formatCitationChicago(entry: BibEntry): String? {
+    return when (entry.type.lowercase()) {
+      "patent" -> formatPatentChicago(entry)
+      "court case" -> formatCourtCaseChicago(entry)
+      "article" -> formatArticleChicago(entry)
+      "book" -> formatBookChicago(entry)
+      "website" -> formatWebsiteChicago(entry)
+      "inproceedings", "conference paper" -> formatInproceedingsChicago(entry)
+      else -> null
+    }
+  }
+
+  fun formatCitationIeee(entry: BibEntry): String? {
+    return when (entry.type.lowercase()) {
+      "patent" -> formatPatentIeee(entry)
+      "court case" -> formatCourtCaseIeee(entry)
+      "article" -> formatArticleIeee(entry)
+      "book" -> formatBookIeee(entry)
+      "website" -> formatWebsiteIeee(entry)
+      "inproceedings", "conference paper" -> formatInproceedingsIeee(entry)
+      else -> null
+    }
+  }
+
+  // --- Common field getters ------------------------------------------------
+  private fun yearOf(f: Map<String, String>) = f["year"]?.trim().orEmpty()
+  private fun titleOf(f: Map<String, String>) = (f["title"] ?: f["booktitle"]).orEmpty().trim()
+  private fun journalOf(f: Map<String, String>) = f["journal"]?.trim().orEmpty()
+  private fun publisherOf(f: Map<String, String>) = (f["publisher"] ?: f["institution"]).orEmpty().trim()
+  private fun urlOf(f: Map<String, String>) = f["url"]?.trim().orEmpty()
+  private fun identifierOf(f: Map<String, String>) = (f["doi"] ?: f["isbn"]).orEmpty().trim()
+
+  private fun formatPatentApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val authorsRaw = f["author"].orEmpty().trim()
+    val title = (f["title"] ?: f["booktitle"]).orEmpty().trim()
+    val date = f["date"]?.trim()
+    val year = f["year"]?.trim()
+    val id = (f["doi"] ?: f["isbn"]).orEmpty().trim() // identifier stored in doi for patents
+    val issuer = (f["publisher"] ?: f["institution"])?.trim().orEmpty()
+    val url = f["url"]?.trim().orEmpty()
+
+    if (title.isEmpty() || id.isEmpty() || issuer.isEmpty()) return null
+
+    val authors = parseAuthorsToList(authorsRaw)
+    val authorsText = if (authors.isNotEmpty()) formatAuthorsApa(authors) else ""
+    val dateText = formatDateForApa(date, year)
+    val titleSentence = toSentenceCase(title)
+
+    val sb = StringBuilder()
+    if (authorsText.isNotEmpty()) sb.append(authorsText).append(' ')
+    if (dateText.isNotEmpty()) sb.append('(').append(dateText).append(')').append('.').append(' ')
+    sb.append(titleSentence)
+    sb.append(' ').append('(').append(id).append(')').append('.').append(' ')
+    sb.append(issuer).append('.')
+    if (url.isNotEmpty() && isPublicPatentRecord(url)) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatPatentMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val authorsRaw = f["author"].orEmpty().trim()
+    val title = (f["title"] ?: f["booktitle"]).orEmpty().trim()
+    val year = f["year"]?.trim().orEmpty()
+    val id = (f["doi"] ?: f["isbn"]).orEmpty().trim()
+    val issuer = (f["publisher"] ?: f["institution"])?.trim().orEmpty()
+    val url = f["url"]?.trim().orEmpty()
+    if (title.isEmpty() || id.isEmpty() || issuer.isEmpty()) return null
+    val authors = parseAuthorsToList(authorsRaw)
+    val authorsText = if (authors.isNotEmpty()) formatAuthorsMla(authors) else ""
+    val sb = StringBuilder()
+    if (authorsText.isNotEmpty()) sb.append(authorsText).append('.').append(' ')
+    sb.append(title).append(' ').append('(').append(id).append(')').append('.').append(' ')
+    if (issuer.isNotEmpty()) sb.append(issuer)
+    if (year.isNotEmpty()) { if (issuer.isNotEmpty()) sb.append(',').append(' '); sb.append(year) }
+    sb.append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatPatentChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val authorsRaw = f["author"].orEmpty().trim()
+    val title = (f["title"] ?: f["booktitle"]).orEmpty().trim()
+    val year = f["year"]?.trim().orEmpty()
+    val id = (f["doi"] ?: f["isbn"]).orEmpty().trim()
+    val issuer = (f["publisher"] ?: f["institution"])?.trim().orEmpty()
+    val url = f["url"]?.trim().orEmpty()
+    if (title.isEmpty() || id.isEmpty() || issuer.isEmpty()) return null
+    val authors = parseAuthorsToList(authorsRaw)
+    val authorsText = if (authors.isNotEmpty()) formatAuthorsChicago(authors) else ""
+    val date = f["date"]?.trim()
+    val dateApa = formatDateForApa(date, year)
+    val dateC = if (dateApa.isNotEmpty()) toMonthDayYear(dateApa) else year
+    val sb = StringBuilder()
+    if (authorsText.isNotEmpty()) sb.append(authorsText).append('.').append(' ')
+    sb.append(title).append('.').append(' ')
+    sb.append(id).append(',').append(' ')
+    if (!dateC.isNullOrBlank()) sb.append(dateC).append('.').append(' ')
+    sb.append(issuer).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatPatentIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val authorsRaw = f["author"].orEmpty().trim()
+    val title = (f["title"] ?: f["booktitle"]).orEmpty().trim()
+    val year = f["year"]?.trim().orEmpty()
+    val id = (f["doi"] ?: f["isbn"]).orEmpty().trim()
+    val issuer = (f["publisher"] ?: f["institution"])?.trim().orEmpty()
+    val url = f["url"]?.trim().orEmpty()
+    if (title.isEmpty() || id.isEmpty() || issuer.isEmpty()) return null
+    val authors = parseAuthorsToList(authorsRaw)
+    // IEEE condensed authors: First-initial. Last, ... ; use APA initials formatter
+    val authorsText = if (authors.isNotEmpty()) formatAuthorsIeee(authors) else ""
+    val sb = StringBuilder()
+    if (authorsText.isNotEmpty()) sb.append(authorsText).append(',').append(' ')
+    sb.append('"').append(title).append('"').append(',').append(' ')
+    sb.append(id).append(',').append(' ')
+    // Prefer Month Day, Year if available
+    run {
+      val dateApa = formatDateForApa(f["date"], year)
+      if (dateApa.isNotEmpty()) sb.append(toMonthDayYear(dateApa)).append(',').append(' ') else if (year.isNotEmpty()) sb.append(year).append(',').append(' ')
+    }
+    sb.append(issuer)
+    if (url.isNotEmpty()) sb.append(',').append(' ').append("[Online]. Available: ").append(url)
+    sb.append('.')
+    return sb.toString()
+  }
+
+  private fun parseAuthorsToList(authorField: String): List<Pair<String, String?>> {
+    if (authorField.isBlank()) return emptyList()
+    return authorField.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE))
+      .map { it.trim().trim('{','}') }
+      .filter { it.isNotEmpty() }
+      .map { name ->
+        if ("," in name) {
+          val idx = name.indexOf(',')
+          val family = name.substring(0, idx).trim()
+          val given = name.substring(idx + 1).trim().ifEmpty { null }
+          family to given
+        } else {
+          // Corporate or single-token name
+          name to null
+        }
+      }
+  }
+
+  private fun formatAuthorsApa(list: List<Pair<String, String?>>): String {
+    if (list.isEmpty()) return ""
+    val formatted = list.map { (family, given) ->
+      if (given == null) family else "$family, ${initialsOf(given)}"
+    }
+    val n = formatted.size
+    return when {
+      n == 1 -> formatted[0]
+      n == 2 -> formatted[0] + ", & " + formatted[1]
+      n in 3..20 -> formatted.dropLast(1).joinToString(", ") + ", & " + formatted.last()
+      n > 20 -> formatted.take(20).joinToString(", ") + ", et al."
+      else -> formatted.joinToString(", ")
+    }
+  }
+
+  private fun formatAuthorsMla(list: List<Pair<String, String?>>): String {
+    if (list.isEmpty()) return ""
+    // MLA: 1 -> "Family, Given"; 2 -> "Family, Given, and Given Family"; >2 -> "Family, Given, et al."
+    fun personToMla(family: String, given: String?): String =
+      if (given == null) family else "$family, $given"
+    return when (list.size) {
+      1 -> personToMla(list[0].first, list[0].second)
+      2 -> personToMla(list[0].first, list[0].second) + ", and " + (list[1].second?.let { "$it ${list[1].first}" } ?: list[1].first)
+      else -> personToMla(list[0].first, list[0].second) + ", et al."
+    }
+  }
+
+  private fun formatAuthorsChicago(list: List<Pair<String, String?>>): String {
+    if (list.isEmpty()) return ""
+    // Chicago: "Given Family and Given Family"; corporate names stay as-is
+    fun personToChicago(family: String, given: String?): String =
+      if (given == null) family else "$given $family"
+    return when (list.size) {
+      1 -> personToChicago(list[0].first, list[0].second)
+      2 -> personToChicago(list[0].first, list[0].second) + " and " + personToChicago(list[1].first, list[1].second)
+      else -> list.dropLast(1).joinToString(", ") { (f, g) -> personToChicago(f, g) } + ", and " + personToChicago(list.last().first, list.last().second)
+    }
+  }
+
+  private fun formatAuthorsIeee(list: List<Pair<String, String?>>): String {
+    if (list.isEmpty()) return ""
+    // IEEE convention: if >6 authors, use first author + "et al."; else list all with initials
+    fun personToIeee(family: String, given: String?): String =
+      if (given == null) family else initialsOf(given).replace(" ", " ") + " " + family
+    return if (list.size > 6) personToIeee(list[0].first, list[0].second) + ", et al."
+    else list.joinToString(", ") { (f, g) -> personToIeee(f, g) }
+  }
+
+  private fun initialsOf(given: String): String {
+    val tokens = given.split(Regex("[\n\r\t ]+"))
+      .flatMap { it.split('-').map { p -> p.trim() } }
+      .filter { it.isNotEmpty() }
+    return tokens.joinToString(" ") { t ->
+      val ch = t.firstOrNull { it.isLetter() } ?: return@joinToString ""
+      ch.uppercase() + "."
+    }.trim()
+  }
+
+  private fun formatDateForApa(date: String?, year: String?): String {
+    // Prefer explicit date; fall back to year
+    if (!date.isNullOrBlank()) {
+      // Try common patterns to render "Year, Month Day"
+      // 1) ISO: YYYY-MM-DD or YYYY/MM/DD
+      val iso = Regex("^(\\d{4})[-/](\\d{1,2})(?:[-/](\\d{1,2}))?$").matchEntire(date)
+      if (iso != null) {
+        val y = iso.groupValues[1]
+        val m = iso.groupValues[2].toIntOrNull()
+        val d = iso.groupValues.getOrNull(3)?.toIntOrNull()
+        val monthName = m?.let { monthName(it) }
+        return if (monthName != null) {
+          if (d != null) "$y, $monthName $d" else "$y, $monthName"
+        } else y
+      }
+      // 2) RFC3339-ish
+      try {
+        val dt = java.time.OffsetDateTime.parse(date)
+        return dt.year.toString() + ", " + monthName(dt.monthValue) + " " + dt.dayOfMonth
+      } catch (_: Throwable) { /* ignore */ }
+      // 3) Already human-friendly; return as-is
+      return date
+    }
+    return year?.takeIf { it.matches(Regex("\\d{4}")) } ?: ""
+  }
+
+  private fun monthName(m: Int): String =
+    listOf("January","February","March","April","May","June","July","August","September","October","November","December")[kotlin.math.max(1, kotlin.math.min(12, m)) - 1]
+
+  private fun toSentenceCase(s: String): String {
+    if (s.isBlank()) return s
+    // Lowercase words except all-caps tokens (likely acronyms)
+    val lowered = s.split(Regex("\\s+")).joinToString(" ") { w ->
+      val letters = w.count { it.isLetter() }
+      val allCaps = letters >= 2 && w.filter { it.isLetter() }.all { it.isUpperCase() }
+      if (allCaps) w else w.lowercase()
+    }
+    val sb = StringBuilder(lowered)
+    // Capitalize first alphabetic character
+    run {
+      var i = 0
+      while (i < sb.length) { if (sb[i].isLetter()) { sb.setCharAt(i, sb[i].uppercaseChar()); break }; i++ }
+    }
+    // Capitalize first letter after a colon + optional spaces
+    run {
+      var idx = 0
+      while (idx < sb.length) {
+        val colon = sb.indexOf(':', idx)
+        if (colon < 0) break
+        var j = colon + 1
+        while (j < sb.length && sb[j].isWhitespace()) j++
+        if (j < sb.length && sb[j].isLetter()) sb.setCharAt(j, sb[j].uppercaseChar())
+        idx = j + 1
+      }
+    }
+    return sb.toString()
+  }
+
+  private fun isPublicPatentRecord(url: String): Boolean {
+    return try {
+      val host = java.net.URI(url).host?.lowercase()?.removePrefix("www.") ?: return false
+      // Common official/public registries
+      host.endsWith("uspto.gov") ||
+      host.contains("epo.org") || host.contains("espacenet") || host.contains("register.epo.org") ||
+      host.contains("patentscope.wipo.int") || host.endsWith("wipo.int") ||
+      host.contains("patents.google.com") || // widely used public record
+      host.endsWith("ipo.gov.uk") || host.endsWith("j-platpat.inpit.go.jp") || host.endsWith("cnipa.gov.cn")
+    } catch (_: Throwable) { false }
+  }
+
+  private fun formatCourtCaseApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val caseNameRaw = titleOf(f)
+    val caseName = normalizeCaseName(caseNameRaw)
+    if (caseName.isBlank()) return null
+    val year = yearOf(f)
+    val court = publisherOf(f)
+    val url = urlOf(f)
+    val vol = f["reporter_volume"]?.trim().orEmpty()
+    val rep = f["reporter"]?.trim().orEmpty()
+    val first = f["first_page"]?.trim().orEmpty()
+    val pin = f["pinpoint"]?.trim().orEmpty()
+    val docket = f["docket"]?.trim().orEmpty()
+    val wl = f["wl"]?.trim().orEmpty()
+    val date = f["date"]?.trim()
+
+    val hasReporter = vol.isNotEmpty() && rep.isNotEmpty() && first.isNotEmpty()
+    val hasSlip = wl.isNotEmpty() || docket.isNotEmpty()
+    val sb = StringBuilder()
+    sb.append(caseName).append(',').append(' ')
+    if (hasReporter || !hasSlip) {
+      if (vol.isEmpty() || rep.isEmpty() || first.isEmpty()) return null
+      sb.append(vol).append(' ').append(rep).append(' ').append(first)
+      if (pin.isNotEmpty()) sb.append(',').append(' ').append(pin)
+      val sup = isSupremeCourt(rep, court)
+      // Parenthetical: (Court Year) or (Year) for Supreme Court
+      sb.append(' ').append('(')
+      if (!sup && court.isNotEmpty()) sb.append(court).append(' ')
+      if (year.isEmpty()) return null
+      sb.append(year).append(')').append('.')
+    } else {
+      // Slip/unpublished opinion
+      if (docket.isNotEmpty()) sb.append("No. ").append(docket).append(',').append(' ')
+      if (wl.isEmpty()) return null else sb.append(wl)
+      val paren = buildCaseParenthetical(court, date, year)
+      if (paren.isEmpty()) return null else sb.append(' ').append(paren).append('.')
+    }
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatCourtCaseMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val caseName = normalizeCaseName(titleOf(f))
+    if (caseName.isBlank()) return null
+    val year = yearOf(f)
+    val court = publisherOf(f)
+    val url = urlOf(f)
+    val vol = f["reporter_volume"].orEmpty().trim()
+    val rep = f["reporter"].orEmpty().trim()
+    val first = f["first_page"].orEmpty().trim()
+    val pin = f["pinpoint"].orEmpty().trim()
+    val docket = f["docket"].orEmpty().trim()
+    val wl = f["wl"].orEmpty().trim()
+    val date = f["date"]
+
+    val hasReporter = vol.isNotEmpty() && rep.isNotEmpty() && first.isNotEmpty()
+    val hasSlip = docket.isNotEmpty() || wl.isNotEmpty()
+    val sb = StringBuilder()
+    sb.append(caseName)
+    if (hasReporter || !hasSlip) {
+      if (vol.isEmpty() || rep.isEmpty() || first.isEmpty()) return null
+      sb.append('.').append(' ')
+      sb.append(vol).append(' ').append(rep).append(' ').append(first)
+      if (pin.isNotEmpty()) sb.append(',').append(' ').append(pin)
+      // Parenthetical (Court Year)
+      val sup = isSupremeCourt(rep, court)
+      val p = StringBuilder("(")
+      if (!sup && court.isNotEmpty()) p.append(court).append(' ')
+      if (year.isEmpty()) return null else p.append(year)
+      p.append(')')
+      sb.append(' ').append(p.toString()).append('.')
+    } else {
+      // Slip format
+      sb.append('.').append(' ')
+      if (docket.isNotEmpty()) sb.append("No. ").append(docket).append(',').append(' ')
+      if (wl.isEmpty()) return null else sb.append(wl)
+      val paren = buildCaseParenthetical(court, date, year)
+      if (paren.isEmpty()) return null else sb.append(' ').append(paren).append('.')
+    }
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatCourtCaseChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val caseName = normalizeCaseName(titleOf(f))
+    if (caseName.isBlank()) return null
+    val year = yearOf(f)
+    val court = publisherOf(f)
+    val url = urlOf(f)
+    val vol = f["reporter_volume"].orEmpty().trim()
+    val rep = f["reporter"].orEmpty().trim()
+    val first = f["first_page"].orEmpty().trim()
+    val pin = f["pinpoint"].orEmpty().trim()
+    val docket = f["docket"].orEmpty().trim()
+    val wl = f["wl"].orEmpty().trim()
+    val date = f["date"]
+
+    val hasReporter = vol.isNotEmpty() && rep.isNotEmpty() && first.isNotEmpty()
+    val hasSlip = docket.isNotEmpty() || wl.isNotEmpty()
+    val sb = StringBuilder()
+    sb.append(caseName).append('.').append(' ')
+    if (hasReporter || !hasSlip) {
+      if (vol.isEmpty() || rep.isEmpty() || first.isEmpty()) return null
+      sb.append(vol).append(' ').append(rep).append(' ').append(first)
+      if (pin.isNotEmpty()) sb.append(',').append(' ').append(pin)
+      // (Court Year) or (Year) for U.S. Supreme Court
+      val sup = isSupremeCourt(rep, court)
+      val p = StringBuilder("(")
+      if (!sup && court.isNotEmpty()) p.append(court).append(' ')
+      if (year.isEmpty()) return null else p.append(year)
+      p.append(')')
+      sb.append(' ').append(p.toString()).append('.')
+    } else {
+      // Slip
+      if (docket.isNotEmpty()) sb.append("No. ").append(docket).append(',').append(' ')
+      if (wl.isEmpty()) return null else sb.append(wl)
+      val paren = buildCaseParenthetical(court, date, year)
+      if (paren.isEmpty()) return null else sb.append(' ').append(paren).append('.')
+    }
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatCourtCaseIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val caseName = normalizeCaseName(titleOf(f))
+    if (caseName.isBlank()) return null
+    val year = yearOf(f)
+    val court = publisherOf(f)
+    val url = urlOf(f)
+    val vol = f["reporter_volume"].orEmpty().trim()
+    val rep = f["reporter"].orEmpty().trim()
+    val first = f["first_page"].orEmpty().trim()
+    val pin = f["pinpoint"].orEmpty().trim()
+    val docket = f["docket"].orEmpty().trim()
+    val wl = f["wl"].orEmpty().trim()
+    val date = f["date"]
+
+    val hasReporter = vol.isNotEmpty() && rep.isNotEmpty() && first.isNotEmpty()
+    val hasSlip = docket.isNotEmpty() || wl.isNotEmpty()
+    val sb = StringBuilder()
+    sb.append(caseName).append(',').append(' ')
+    if (hasReporter || !hasSlip) {
+      if (vol.isEmpty() || rep.isEmpty() || first.isEmpty()) return null
+      sb.append(vol).append(' ').append(rep).append(' ').append(first)
+      if (pin.isNotEmpty()) sb.append(',').append(' ').append(pin)
+      val sup = isSupremeCourt(rep, court)
+      val p = StringBuilder("(")
+      if (!sup && court.isNotEmpty()) p.append(court).append(' ')
+      if (year.isEmpty()) return null else p.append(year)
+      p.append(')')
+      sb.append(' ').append(p.toString())
+    } else {
+      // Slip
+      if (docket.isNotEmpty()) sb.append("No. ").append(docket).append(',').append(' ')
+      if (wl.isEmpty()) return null else sb.append(wl)
+      val paren = buildCaseParenthetical(court, date, year)
+      if (paren.isEmpty()) return null else sb.append(' ').append(paren)
+    }
+    if (url.isNotEmpty()) sb.append('.').append(' ').append("[Online]. Available: ").append(url) else sb.append('.')
+    return sb.toString()
+  }
+
+  private fun normalizeCaseName(s: String): String {
+    if (s.isBlank()) return s
+    // Ensure " v. " spacing and period
+    return s
+      .replace(Regex("\\s+v\\.?\\s+|\\s+vs\\.?\\s+", RegexOption.IGNORE_CASE), " v. ")
+      .trim()
+  }
+
+  private fun isSupremeCourt(reporter: String, court: String): Boolean {
+    val r = reporter.lowercase()
+    val c = court.lowercase()
+    return r.contains("u.s.") || r.contains("s. ct.") || c.contains("supreme court") || c == "u.s." || c.contains("us supreme")
+  }
+
+  private fun buildCaseParenthetical(court: String, date: String?, year: String?): String {
+    val c = court.trim()
+    val d = formatBluebookDate(date, year)
+    if (c.isEmpty() && d.isEmpty()) return ""
+    return "(${listOf(c, d).filter { it.isNotEmpty() }.joinToString(" ")})"
+  }
+
+  private fun formatBluebookDate(date: String?, year: String?): String {
+    // Return "Mar. 1, 2021" style if possible; else year
+    if (!date.isNullOrBlank()) {
+      // Try ISO forms
+      val iso = Regex("^(\\d{4})[-/](\\d{1,2})(?:[-/](\\d{1,2}))?$").matchEntire(date)
+      if (iso != null) {
+        val y = iso.groupValues[1]
+        val m = iso.groupValues[2].toIntOrNull()
+        val d = iso.groupValues.getOrNull(3)?.toIntOrNull()
+        val mon = m?.let { bluebookMonthAbbrev(it) }
+        return if (mon != null && d != null) "$mon $d, $y" else y
+      }
+      // Fallback: use APA date parse, then convert to Month Day, Year (non-abbrev)
+      val apa = formatDateForApa(date, year)
+      if (apa.isNotEmpty()) return toMonthDayYear(apa)
+    }
+    return year?.takeIf { it.matches(Regex("\\d{4}")) } ?: ""
+  }
+
+  private fun bluebookMonthAbbrev(m: Int): String = when (m) {
+    1 -> "Jan."
+    2 -> "Feb."
+    3 -> "Mar."
+    4 -> "Apr."
+    5 -> "May"
+    6 -> "June"
+    7 -> "July"
+    8 -> "Aug."
+    9 -> "Sept."
+    10 -> "Oct."
+    11 -> "Nov."
+    12 -> "Dec."
+    else -> ""
+  }
+
+  private fun toMonthDayYear(apaDate: String): String {
+    // Convert "YYYY, Month Day" -> "Month Day, YYYY" if pattern matches; otherwise return input
+    val m = Regex("^(\\d{4}),\\s+(.+)").matchEntire(apaDate)
+    return if (m != null) m.groupValues[2] + ", " + m.groupValues[1] else apaDate
+  }
+
+  // --- APA (other types) ---------------------------------------------------
+  private fun formatArticleApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val journal = journalOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty() || journal.isEmpty() || !year.matches(Regex("\\d{4}"))) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsApa(authors)).append(' ').append('(').append(year).append(')').append('.').append(' ')
+    sb.append(toSentenceCase(title)).append('.').append(' ')
+    sb.append(journal).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatBookApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val publisher = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty() || publisher.isEmpty() || !year.matches(Regex("\\d{4}"))) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsApa(authors)).append(' ').append('(').append(year).append(')').append('.').append(' ')
+    sb.append(toSentenceCase(title)).append('.').append(' ')
+    sb.append(publisher).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatWebsiteApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val site = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || site.isEmpty() || url.isEmpty()) return null
+    val sb = StringBuilder()
+    if (authors.isNotEmpty()) sb.append(formatAuthorsApa(authors)).append(' ').append('(').append(year.ifEmpty { "n.d." }).append(')').append('.').append(' ')
+    sb.append(toSentenceCase(title)).append('.').append(' ')
+    sb.append(site).append('.').append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatInproceedingsApa(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty() || !year.matches(Regex("\\d{4}"))) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsApa(authors)).append(' ').append('(').append(year).append(')').append('.').append(' ')
+    sb.append(toSentenceCase(title)).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  // --- MLA (other types) ---------------------------------------------------
+  private fun formatArticleMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val journal = journalOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || journal.isEmpty() || authors.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsMla(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.').append(' ')
+    sb.append(journal)
+    if (year.isNotEmpty()) sb.append(',').append(' ').append(year)
+    sb.append('.'); if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatBookMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val publisher = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || publisher.isEmpty() || authors.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsMla(authors)).append('.').append(' ')
+    sb.append(title).append('.').append(' ')
+    sb.append(publisher)
+    if (year.isNotEmpty()) sb.append(',').append(' ').append(year)
+    sb.append('.'); if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatWebsiteMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val site = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || site.isEmpty() || url.isEmpty()) return null
+    val sb = StringBuilder()
+    if (authors.isNotEmpty()) sb.append(formatAuthorsMla(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.').append(' ')
+    sb.append(site)
+    if (year.isNotEmpty()) sb.append(',').append(' ').append(year)
+    sb.append('.').append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatInproceedingsMla(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsMla(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.'); if (year.isNotEmpty()) sb.append(' ').append(year).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  // --- Chicago (other types) ----------------------------------------------
+  private fun formatArticleChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val journal = journalOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || journal.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsChicago(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.').append(' ')
+    sb.append(journal).append(' ').append('(').append(year).append(')').append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatBookChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val publisher = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || publisher.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsChicago(authors)).append('.').append(' ')
+    sb.append(title).append('.').append(' ')
+    sb.append(publisher).append(',').append(' ').append(year).append('.')
+    if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatWebsiteChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val site = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || site.isEmpty() || url.isEmpty()) return null
+    val sb = StringBuilder()
+    if (authors.isNotEmpty()) sb.append(formatAuthorsChicago(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.').append(' ')
+    sb.append(site)
+    if (year.isNotEmpty()) sb.append(',').append(' ').append(year)
+    sb.append('.').append(' ').append(url)
+    return sb.toString()
+  }
+
+  private fun formatInproceedingsChicago(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsChicago(authors)).append('.').append(' ')
+    sb.append('"').append(title).append('"').append('.').append(' ')
+    sb.append(year).append('.'); if (url.isNotEmpty()) sb.append(' ').append(url)
+    return sb.toString()
+  }
+
+  // --- IEEE (other types) --------------------------------------------------
+  private fun formatArticleIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val journal = journalOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || journal.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsIeee(authors)).append(',').append(' ')
+    sb.append('"').append(title).append('"').append(',').append(' ')
+    sb.append(journal).append(',').append(' ')
+    sb.append(year).append('.'); if (url.isNotEmpty()) sb.append(' ').append("[Online]. Available: ").append(url)
+    return sb.toString()
+  }
+
+  private fun formatBookIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val publisher = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || publisher.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsIeee(authors)).append(',').append(' ')
+    sb.append(title).append('.').append(' ')
+    sb.append(publisher).append(',').append(' ').append(year).append('.'); if (url.isNotEmpty()) sb.append(' ').append("[Online]. Available: ").append(url)
+    return sb.toString()
+  }
+
+  private fun formatWebsiteIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val site = publisherOf(f)
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || site.isEmpty() || url.isEmpty()) return null
+    val sb = StringBuilder()
+    if (authors.isNotEmpty()) sb.append(formatAuthorsIeee(authors)).append(',').append(' ')
+    sb.append('"').append(title).append('"').append(',').append(' ')
+    sb.append(site)
+    if (year.isNotEmpty()) sb.append(',').append(' ').append(year)
+    sb.append('.').append(' ').append("[Online]. Available: ").append(url)
+    return sb.toString()
+  }
+
+  private fun formatInproceedingsIeee(entry: BibEntry): String? {
+    val f = entry.fields
+    val title = titleOf(f)
+    val authors = parseAuthorsToList(f["author"].orEmpty())
+    val year = yearOf(f)
+    val url = urlOf(f)
+    if (title.isEmpty() || authors.isEmpty() || year.isEmpty()) return null
+    val sb = StringBuilder()
+    sb.append(formatAuthorsIeee(authors)).append(',').append(' ')
+    sb.append('"').append(title).append('"').append(',').append(' ')
+    sb.append(year).append('.'); if (url.isNotEmpty()) sb.append(' ').append("[Online]. Available: ").append(url)
+    return sb.toString()
+  }
+
   fun readEntries(): List<BibEntry> {
     val path = ensureLibraryExists() ?: return emptyList()
     return try {
-      val text = Files.readString(path)
+      var text = Files.readString(path)
+      // Migrate deprecated types: music -> song
+      val migrated = text.replace(Regex("(?i)@music\\s*\\{"), "@song{")
+      if (migrated != text) {
+        Files.writeString(path, migrated, StandardCharsets.UTF_8)
+        LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.refresh(false, false)
+        text = migrated
+      }
       val entries = mutableListOf<BibEntry>()
       val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)\\n\\}", Pattern.MULTILINE)
       val m = entryPattern.matcher(text)
       while (m.find()) {
-        val type = m.group(1).lowercase()
+        val type = normalizeType(m.group(1).lowercase())
         val key = m.group(2)
         val body = m.group(3)
         val fields = parseFields(body)
@@ -90,7 +882,7 @@ class BibLibraryService(private val project: Project) {
     val path = ensureLibraryExists() ?: return false
     return try {
       val original = Files.readString(path)
-      val normalizedType = entry.type.trim().lowercase()
+      val normalizedType = normalizeType(entry.type.trim().lowercase())
       val key = entry.key.trim()
 
       // Regex to find existing entry by type+key, across lines
@@ -136,6 +928,11 @@ class BibLibraryService(private val project: Project) {
       log.warn("Failed to upsert BibTeX entry", t)
       false
     }
+  }
+
+  private fun normalizeType(t: String): String = when (t.lowercase().trim()) {
+    "music" -> "song"
+    else -> t.lowercase().trim()
   }
 
   private fun extractFieldValue(entryText: String, fieldName: String): String? {
@@ -547,6 +1344,21 @@ class BibLibraryService(private val project: Project) {
 
   // Determine if an entry contains all required fields for its type.
   private fun isComplete(entry: BibEntry): Boolean {
+    val type = entry.type.lowercase()
+    if (type == "court case") {
+      val f = entry.fields
+      val title = f["title"].orEmpty().trim()
+      val year = f["year"].orEmpty().trim()
+      if (title.isEmpty() || !year.matches(Regex("\\d{4}"))) return false
+      val hasReporter = (f["reporter_volume"].orEmpty().isNotBlank()
+        && f["reporter"].orEmpty().isNotBlank()
+        && f["first_page"].orEmpty().isNotBlank())
+      val hasSlip = (f["docket"].orEmpty().isNotBlank()
+        && f["wl"].orEmpty().isNotBlank()
+        && f["date"].orEmpty().isNotBlank()
+        && f["publisher"].orEmpty().isNotBlank()) // court required for slip
+      return hasReporter || hasSlip
+    }
     val req = requiredKeysForType(entry.type)
     for (k in req) {
       val v = entry.fields[k]?.trim().orEmpty()
@@ -568,15 +1380,21 @@ class BibLibraryService(private val project: Project) {
     "inproceedings", "conference paper" -> setOf("title", "author", "year")
     // Media types
     "movie/film", "video" -> setOf("title", "author", "year", "publisher")
-    "music", "song" -> setOf("title", "author", "year", "publisher")
+    "song" -> setOf("title", "author", "year", "publisher")
     "tv/radio broadcast" -> setOf("title", "author", "year", "publisher")
     "speech" -> setOf("title", "author", "year")
-    // Thesis/report/patent/dictionary entry: require author, title, year, publisher
-    "thesis (or dissertation)", "report", "patent", "dictionary entry" -> setOf("title", "author", "year", "publisher")
+    // Thesis/report/dictionary entry: require author, title, year, publisher
+    "thesis (or dissertation)", "report", "dictionary entry" -> setOf("title", "author", "year", "publisher")
+    // NIST standards: title, year, publisher (NIST); authors optional
+    "nist" -> setOf("title", "year", "publisher")
+    // Patent: inventor(s), year/date, issuing authority, identifier
+    "patent" -> setOf("title", "author", "year", "publisher", "doi")
     // Journal document type (non-article) require author, title, year
     "journal" -> setOf("title", "author", "year")
     // Legislation/regulation: title, year, publisher (issuing body)
     "legislation", "regulation" -> setOf("title", "year", "publisher")
+    // Court case: minimally require title; rest validated by style formatter
+    "court case" -> setOf("title")
     // Misc and others: title only
     else -> setOf("title")
   }
