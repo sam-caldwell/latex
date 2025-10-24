@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
   id("org.jetbrains.intellij.platform") version "2.10.2"
   kotlin("jvm") version "1.9.23"
@@ -22,13 +24,23 @@ dependencies {
   testImplementation("io.mockk:mockk:1.13.12")
   testImplementation("junit:junit:4.13.2")
   testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.2")
+  testRuntimeOnly("org.jetbrains.kotlinx:kotlinx-coroutines-debug:1.7.3")
 
   intellijPlatform {
     intellijIdeaCommunity("2024.2", useInstaller = false)
     bundledPlugin("com.intellij.java")
-    testFramework()
+    testFramework(TestFrameworkType.Platform)
   }
 }
+
+// Additional source set for LightPlatform integration tests
+val lightTest by sourceSets.creating {
+  compileClasspath += sourceSets["test"].compileClasspath + sourceSets["main"].output
+  runtimeClasspath += sourceSets["test"].runtimeClasspath + sourceSets["main"].output
+}
+
+configurations[lightTest.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+configurations[lightTest.runtimeOnlyConfigurationName].extendsFrom(configurations.testRuntimeOnly.get())
 
 // Use Java 17 toolchain for compiling (IntelliJ 2024.2 requires 17)
 kotlin { jvmToolchain(17) }
@@ -44,6 +56,14 @@ tasks {
 
   test {
     useJUnitPlatform()
+    // Ensure tests run on JDK 17 to match IntelliJ 2024.2 runtime
+    val toolchains = project.extensions.getByType(org.gradle.jvm.toolchain.JavaToolchainService::class.java)
+    javaLauncher.set(toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(17)) })
+    // Attach coroutines agent required by the IntelliJ test framework
+    val agent = project.layout.projectDirectory.file(".intellijPlatform/coroutines-javaagent-legacy.jar").asFile
+    if (agent.exists()) {
+      jvmArgs("-javaagent:${agent.absolutePath}")
+    }
   }
 
   jacocoTestReport {
@@ -60,7 +80,7 @@ tasks {
       "**/*"
     )
     val includePatterns = listOf(
-      "com/samcaldwell/latex/LookupSettingsService*"
+      "com/samcaldwell/latex/**"
     )
 
     val classDirs = files(sourceSets["main"].output.classesDirs)
@@ -76,7 +96,9 @@ tasks {
   jacocoTestCoverageVerification {
     dependsOn(test)
     violationRules {
+      // Global minimum for the whole plugin package
       rule {
+        element = "BUNDLE"
         limit {
           // Minimum overall coverage required
           counter = "INSTRUCTION"
@@ -84,9 +106,20 @@ tasks {
           minimum = BigDecimal("0.80")
         }
       }
+
+      // Ensure BibLibraryService specifically also meets the threshold
+      rule {
+        element = "CLASS"
+        includes = listOf("com.samcaldwell.latex.BibLibraryService")
+        limit {
+          counter = "INSTRUCTION"
+          value = "COVEREDRATIO"
+          minimum = BigDecimal("0.80")
+        }
+      }
     }
     val excludePatterns = listOf("**/*")
-    val includePatterns = listOf("com/samcaldwell/latex/LookupSettingsService*")
+    val includePatterns = listOf("com/samcaldwell/latex/**")
     val classDirs = files(sourceSets["main"].output.classesDirs)
     classDirectories.setFrom(
       classDirs.asFileTree.matching {
@@ -98,4 +131,25 @@ tasks {
 
   // Also gate 'check' on coverage verification so CI fails appropriately
   check { dependsOn(jacocoTestCoverageVerification) }
+
+  // LightPlatform tests task for CI
+  register<Test>("lightTest") {
+    description = "Runs LightPlatform integration tests"
+    group = "verification"
+    testClassesDirs = sourceSets["lightTest"].output.classesDirs
+    classpath = sourceSets["lightTest"].runtimeClasspath
+    useJUnit()
+    systemProperty("idea.is.unit.test", "true")
+    systemProperty("idea.home.path", layout.projectDirectory.asFile.absolutePath)
+    systemProperty("enableLightTests", "true")
+    systemProperty("idea.log.assert.disabled", "true")
+
+    val toolchains = project.extensions.getByType(org.gradle.jvm.toolchain.JavaToolchainService::class.java)
+    javaLauncher.set(toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(17)) })
+
+    val agent = project.layout.projectDirectory.file(".intellijPlatform/coroutines-javaagent-legacy.jar").asFile
+    if (agent.exists()) {
+      jvmArgs("-javaagent:${agent.absolutePath}")
+    }
+  }
 }
