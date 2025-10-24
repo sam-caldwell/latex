@@ -1,4 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 24 24"
+     fill="#003300"
+     stroke="currentColor"
+     stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round"
+>
   <!-- Graduation cap -->
   <path d="M12 5l8 3.5-8 3.5-8-3.5L12 5Z"/>
   <path d="M6 10.7v1.8c0 1.1 2.7 2 6 2s6-.9 6-2v-1.8"/>
