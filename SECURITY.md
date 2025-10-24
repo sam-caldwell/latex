@@ -2,7 +2,8 @@
 
 ## Reporting a Vulnerability
 
-If you believe you have found a security vulnerability, please email scaldwell@asymmetric-effort.com with details of your finding. Do not open a public issue.
+If you believe you have found a security vulnerability, please email scaldwell@asymmetric-effort.com with details of 
+your finding. Do not open a public issue.
 
 If possible, include:
 - Steps to reproduce
@@ -10,4 +11,4 @@ If possible, include:
 - Potential impact
 - Any suggested mitigations or patches
 
-We will acknowledge receipt and follow up as quickly as possible.
+We will acknowledge the receipt and follow up as quickly as possible.
