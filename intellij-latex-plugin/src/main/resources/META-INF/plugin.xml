@@ -1,9 +1,17 @@
 <idea-plugin>
-  <id>com.samcaldwell.latex.preview</id>
-  <name>LaTeX Tools + Preview</name>
+  <id>net.samcaldwell.latex</id>
+  <name>LaTeX and Bibliography Manager</name>
   <vendor email="sam@example.com">Sam Caldwell</vendor>
   <description>
-    LaTeX authoring with live PDF preview, BibTeX support, and templates.
+    LaTeX and Bibliography Manager: author LaTeX with live PDF preview and manage BibTeX entries with context-aware
+    forms, validation, and flexible imports (DOI/URL/ISBN/Title/Author). Book/article lookups include OpenLibrary,
+    Google Books, Crossref, WorldCat (OCLC Classify), British National Bibliography (BNB), openBD (Japan), and the US
+    Library of Congress (LOC), plus PDF metadata extraction. Media lookups include OMDb, TMDb, and MusicBrainz. Includes
+    templates and citation tooling for APA/MLA/Chicago contexts.
+
+    Keywords: latex and bibliography manager, LaTeX, BibTeX, bibliography, citation, APA, MLA, Chicago, DOI, DOI.org,
+              OpenLibrary, Google Books, Crossref, WorldCat, OCLC, BNB, openBD, Library of Congress, LOC, PDF,
+              OMDb, TMDb, MusicBrainz.
   </description>
 
   <idea-version since-build="242"/>

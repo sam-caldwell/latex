@@ -50,39 +50,10 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   private val defaultLabelColors = mutableMapOf<JComponent, Color>()
   private var currentKey: String? = null
   private var currentType: String? = null
-  private val listModel = DefaultListModel<BibLibraryService.BibEntry>()
   private val formPanel = JPanel(GridBagLayout())
   private var formRow = 0
   private data class FieldRow(val label: JComponent, val field: JComponent)
   private val fieldRows = mutableMapOf<String, FieldRow>()
-  private val entryList = JList(listModel).apply {
-    selectionMode = ListSelectionModel.SINGLE_SELECTION
-    cellRenderer = object : DefaultListCellRenderer() {
-      override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
-        val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as JLabel
-        if (value is BibLibraryService.BibEntry) {
-          val title = value.fields["title"]?.takeIf { it.isNotBlank() }
-          val firstAuthor = value.fields["author"]?.let { authors ->
-            val parts = authors.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE))
-            parts.firstOrNull()?.trim()
-          }?.takeIf { !it.isNullOrBlank() }
-          c.text = when {
-            title != null && firstAuthor != null -> "$title — $firstAuthor"
-            title != null -> title
-            firstAuthor != null -> firstAuthor
-            else -> value.key
-          }
-        }
-        return c
-      }
-    }
-    addListSelectionListener {
-      if (!it.valueIsAdjusting) {
-        val e = selectedValue
-        if (e != null) loadEntryIntoForm(e)
-      }
-    }
-  }
   private val typeField = JComboBox(arrayOf(
     // Common BibTeX types
     "article", "book", "inproceedings", "misc",
@@ -97,6 +68,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   private val authorsModel = DefaultListModel<AuthorName>()
   private val authorsList = JList(authorsModel).apply {
     visibleRowCount = 4
+    selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
     cellRenderer = object : DefaultListCellRenderer() {
       override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
         val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as JLabel
@@ -113,8 +85,44 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   private val publisherField = JTextField()
   private val doiField = JTextField()
   private val urlField = JTextField()
+  private val abstractArea = JTextArea().apply {
+    lineWrap = true
+    wrapStyleWord = true
+    rows = 4
+  }
+  private val keywordField = JTextField()
+  private val keywordsModel = DefaultListModel<String>()
+  private val keywordsList = JList(keywordsModel).apply {
+    visibleRowCount = 4
+    selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+  }
+  // Metadata fields
+  private val createdField = JTextField().apply {
+    isEditable = false
+    isEnabled = false
+  }
+  private val modifiedField = JTextField().apply {
+    isEditable = false
+    isEnabled = false
+  }
+  private val sourceField = JTextField()
+  private val verifiedByField = JTextField()
   private val verifiedCheck = JCheckBox()
-  private val importField = JTextField()
+  // Search criteria builder UI (replaces DOI/URL import)
+  private data class SearchCriterion(val kind: String, val text: String)
+  private val searchInput = JTextField().apply { columns = 18 }
+  private val searchTypeCombo = JComboBox(arrayOf("Title", "DOI", "URL", "ISBN", "Author"))
+  private val searchCriteriaModel = DefaultListModel<SearchCriterion>()
+  private val searchCriteriaList = JList(searchCriteriaModel).apply {
+    visibleRowCount = 4
+    cellRenderer = object : DefaultListCellRenderer() {
+      override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
+        val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as JLabel
+        if (value is SearchCriterion) c.text = "${value.kind}: ${value.text}"
+        return c
+      }
+    }
+  }
 
   init {
     fun addRow(label: String, comp: JComponent) {
@@ -167,26 +175,97 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     val authorsScroll = JScrollPane(authorsList).apply { preferredSize = java.awt.Dimension(200, 80) }
     addFieldRow("author_list", "Authors", authorsScroll)
     addAuthorBtn.addActionListener { addAuthorFromFields() }
-    addFieldRow("title", "Title", titleField)
-    // Year: limit to 4 characters and digits only, set visual width to 4
-    yearField.columns = 4
-    (yearField.document as? javax.swing.text.AbstractDocument)?.documentFilter = object : javax.swing.text.DocumentFilter() {
-      override fun insertString(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, string: String?, attr: javax.swing.text.AttributeSet?) {
-        if (string == null) return
-        val filtered = string.filter { it.isDigit() }
-        val newLen = fb.document.length + filtered.length
-        if (filtered.isNotEmpty() && newLen <= 4) super.insertString(fb, offset, filtered, attr)
+
+    // Context menu: delete selected author(s)
+    run {
+      val popup = JPopupMenu()
+      val deleteItem = JMenuItem("Delete")
+      deleteItem.addActionListener { removeSelectedAuthors() }
+      popup.add(deleteItem)
+
+      fun showPopup(e: java.awt.event.MouseEvent) {
+        val idx = authorsList.locationToIndex(e.point)
+        if (idx >= 0) {
+          // If clicked outside current selection, select the item under cursor
+          val sel = authorsList.selectedIndices.toSet()
+          if (idx !in sel) authorsList.selectedIndex = idx
+        }
+        popup.show(authorsList, e.x, e.y)
       }
-      override fun replace(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, length: Int, text: String?, attrs: javax.swing.text.AttributeSet?) {
-        val current = fb.document.getText(0, fb.document.length)
-        val prefix = current.substring(0, offset)
-        val suffix = current.substring(offset + length)
-        val t = (text ?: "").filter { it.isDigit() }
-        val candidate = (prefix + t + suffix)
-        if (candidate.length <= 4) super.replace(fb, offset, length, t, attrs)
-      }
+
+      authorsList.addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mousePressed(e: java.awt.event.MouseEvent) {
+          if (e.isPopupTrigger || javax.swing.SwingUtilities.isRightMouseButton(e)) showPopup(e)
+        }
+        override fun mouseReleased(e: java.awt.event.MouseEvent) {
+          if (e.isPopupTrigger) showPopup(e)
+        }
+      })
     }
-    addFieldRow("year", "Year", yearField)
+    // Title + Year on the same row
+    run {
+      val titleLabel = JLabel("Title")
+      val yearLabel = JLabel("Year")
+
+      val lcTitle = GridBagConstraints().apply {
+        gridx = 0; gridy = formRow; weightx = 0.0
+        fill = GridBagConstraints.HORIZONTAL
+        insets = Insets(4, 6, 4, 6)
+      }
+      val fcTitle = GridBagConstraints().apply {
+        gridx = 1; gridy = formRow; weightx = 1.0
+        fill = GridBagConstraints.HORIZONTAL
+        insets = Insets(4, 6, 4, 6)
+      }
+      val lcYear = GridBagConstraints().apply {
+        gridx = 2; gridy = formRow; weightx = 0.0
+        fill = GridBagConstraints.NONE
+        anchor = GridBagConstraints.EAST
+        insets = Insets(4, 6, 4, 6)
+      }
+      val fcYear = GridBagConstraints().apply {
+        gridx = 3; gridy = formRow; weightx = 0.0
+        fill = GridBagConstraints.NONE
+        anchor = GridBagConstraints.WEST
+        insets = Insets(4, 0, 4, 6)
+      }
+
+      // Year: limit to 4 characters and digits only, set visual width to 4
+      yearField.columns = 4
+      (yearField.document as? javax.swing.text.AbstractDocument)?.documentFilter = object : javax.swing.text.DocumentFilter() {
+        override fun insertString(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, string: String?, attr: javax.swing.text.AttributeSet?) {
+          if (string == null) return
+          val filtered = string.filter { it.isDigit() }
+          val newLen = fb.document.length + filtered.length
+          if (filtered.isNotEmpty() && newLen <= 4) super.insertString(fb, offset, filtered, attr)
+        }
+        override fun replace(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, length: Int, text: String?, attrs: javax.swing.text.AttributeSet?) {
+          val current = fb.document.getText(0, fb.document.length)
+          val prefix = current.substring(0, offset)
+          val suffix = current.substring(offset + length)
+          val t = (text ?: "").filter { it.isDigit() }
+          val candidate = (prefix + t + suffix)
+          if (candidate.length <= 4) super.replace(fb, offset, length, t, attrs)
+        }
+      }
+
+      // Add components in one row: Title label, Title field, Year label, Year field
+      formPanel.add(titleLabel, lcTitle)
+      formPanel.add(titleField, fcTitle)
+      formPanel.add(yearLabel, lcYear)
+      formPanel.add(yearField, fcYear)
+
+      // Register for validation visibility and label coloring
+      fieldRows["title"] = FieldRow(titleLabel, titleField)
+      fieldRows["year"] = FieldRow(yearLabel, yearField)
+      defaultLabelColors.putIfAbsent(titleLabel, titleLabel.foreground)
+      defaultLabelColors.putIfAbsent(yearLabel, yearLabel.foreground)
+
+      formRow++
+    }
+    // Abstract (multiline)
+    val abstractScroll = JScrollPane(abstractArea).apply { preferredSize = java.awt.Dimension(200, 88) }
+    addFieldRow("abstract", "Abstract", abstractScroll)
     addFieldRow("journal", "Journal", journalField)
     addFieldRow("publisher", "Publisher", publisherField)
     addFieldRow("doi", "DOI", doiField)
@@ -201,24 +280,80 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       gbl.setConstraints(doiField, gc)
     }
     addFieldRow("url", "URL", urlField)
+    // Keywords input + list
+    val addKeywordBtn = JButton("+")
+    keywordField.columns = 18
+    val keywordInput = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0))
+    keywordInput.add(keywordField)
+    keywordInput.add(addKeywordBtn)
+    addFieldRow("keyword_input", "Keywords", keywordInput)
+    val keywordsScroll = JScrollPane(keywordsList).apply { preferredSize = java.awt.Dimension(200, 80) }
+    addFieldRow("keywords_list", "Keyword List", keywordsScroll)
+    addKeywordBtn.addActionListener { addKeywordFromField() }
+
+    // Keywords context menu: delete selected keyword(s)
+    run {
+      val popup = JPopupMenu()
+      val deleteItem = JMenuItem("Delete")
+      deleteItem.addActionListener { removeSelectedKeywords() }
+      popup.add(deleteItem)
+
+      fun showPopup(e: java.awt.event.MouseEvent) {
+        val idx = keywordsList.locationToIndex(e.point)
+        if (idx >= 0) {
+          val sel = keywordsList.selectedIndices.toSet()
+          if (idx !in sel) keywordsList.selectedIndex = idx
+        }
+        popup.show(keywordsList, e.x, e.y)
+      }
+
+      keywordsList.addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mousePressed(e: java.awt.event.MouseEvent) {
+          if (e.isPopupTrigger || javax.swing.SwingUtilities.isRightMouseButton(e)) showPopup(e)
+        }
+        override fun mouseReleased(e: java.awt.event.MouseEvent) {
+          if (e.isPopupTrigger) showPopup(e)
+        }
+      })
+    }
+    // --- Metadata section header ---
+    run {
+      val header = JLabel("Metadata")
+      val lc = GridBagConstraints().apply {
+        gridx = 0; gridy = formRow; gridwidth = 4; weightx = 1.0
+        fill = GridBagConstraints.HORIZONTAL
+        insets = Insets(8, 6, 2, 6)
+      }
+      header.font = header.font.deriveFont(header.font.size2D + 0f)
+      formPanel.add(header, lc)
+      formRow++
+      val sep = JSeparator()
+      val sc = GridBagConstraints().apply {
+        gridx = 0; gridy = formRow; gridwidth = 4; weightx = 1.0
+        fill = GridBagConstraints.HORIZONTAL
+        insets = Insets(0, 6, 6, 6)
+      }
+      formPanel.add(sep, sc)
+      formRow++
+    }
+
+    // Metadata fields: created, modified (readonly), source, verified, verified_by
+    addFieldRow("created", "Created", createdField)
+    addFieldRow("modified", "Modified", modifiedField)
+    addFieldRow("source", "Source", sourceField)
     addFieldRow("verified", "Verified", verifiedCheck)
+    addFieldRow("verified_by", "Verified By", verifiedByField)
 
     val buttonPanel = JPanel()
-    val saveButton = JButton("Save Entry")
-    saveButton.addActionListener { saveEntry() }
-    val openButton = JButton("Open library.bib")
-    openButton.addActionListener { openLibrary() }
-    val importButton = JButton("Import DOI/URL/Title → BibTeX")
-    importButton.addActionListener { importByDoiOrUrl() }
-    val aiLookupButton = JButton("Lookup (AI)")
-    aiLookupButton.toolTipText = "Use JetBrains AI Assistant if installed"
-    aiLookupButton.addActionListener { importViaAi() }
-    buttonPanel.add(saveButton)
-    buttonPanel.add(openButton)
-    buttonPanel.add(JLabel(" DOI/URL:"))
-    buttonPanel.add(importField.apply { columns = 18 })
-    buttonPanel.add(importButton)
-    buttonPanel.add(aiLookupButton)
+    val addCritBtn = JButton("+")
+    addCritBtn.addActionListener { addSearchCriterion() }
+    val searchBtn = JButton("Search")
+    searchBtn.addActionListener { performSearchByCriteria() }
+    buttonPanel.add(JLabel("Search:"))
+    buttonPanel.add(searchTypeCombo)
+    buttonPanel.add(searchInput)
+    buttonPanel.add(addCritBtn)
+    buttonPanel.add(searchBtn)
 
     val topPanel = JPanel(BorderLayout())
     val toolBar = JToolBar().apply {
@@ -246,26 +381,41 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     }
     topPanel.add(toolBar, BorderLayout.NORTH)
     topPanel.add(JScrollPane(formPanel), BorderLayout.CENTER)
-    topPanel.add(buttonPanel, BorderLayout.SOUTH)
+    // Bottom search section with criteria list
+    val searchSection = JPanel(BorderLayout())
+    searchSection.add(buttonPanel, BorderLayout.NORTH)
+    val critPanel = JPanel(BorderLayout())
+    critPanel.add(JLabel("Criteria"), BorderLayout.WEST)
+    // Add right-click delete on criteria list
+    run {
+      val popup = JPopupMenu()
+      val deleteItem = JMenuItem("Delete")
+      deleteItem.addActionListener {
+        val indices = searchCriteriaList.selectedIndices
+        if (indices != null && indices.isNotEmpty()) {
+          for (i in indices.sortedDescending()) if (i in 0 until searchCriteriaModel.size()) searchCriteriaModel.remove(i)
+        }
+      }
+      popup.add(deleteItem)
+      searchCriteriaList.addMouseListener(object : java.awt.event.MouseAdapter() {
+        private fun show(e: java.awt.event.MouseEvent) {
+          val idx = searchCriteriaList.locationToIndex(e.point)
+          if (idx >= 0) {
+            val sel = searchCriteriaList.selectedIndices.toSet()
+            if (idx !in sel) searchCriteriaList.selectedIndex = idx
+          }
+          popup.show(searchCriteriaList, e.x, e.y)
+        }
+        override fun mousePressed(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger || javax.swing.SwingUtilities.isRightMouseButton(e)) show(e) }
+        override fun mouseReleased(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger) show(e) }
+      })
+    }
+    critPanel.add(JScrollPane(searchCriteriaList).apply { preferredSize = java.awt.Dimension(200, 80) }, BorderLayout.CENTER)
+    searchSection.add(critPanel, BorderLayout.CENTER)
+    topPanel.add(searchSection, BorderLayout.SOUTH)
 
-    val bottomPanel = JPanel(BorderLayout())
-    val refresh = JButton("Refresh")
-    refresh.addActionListener { refreshList() }
-    val deleteBtn = JButton("Delete")
-    deleteBtn.addActionListener { deleteSelected() }
-    val bottomTop = JPanel(BorderLayout())
-    bottomTop.add(JLabel("Sources in library.bib"), BorderLayout.WEST)
-    val bottomButtons = JPanel()
-    bottomButtons.add(refresh)
-    bottomButtons.add(deleteBtn)
-    bottomTop.add(bottomButtons, BorderLayout.EAST)
-    bottomPanel.add(bottomTop, BorderLayout.NORTH)
-    bottomPanel.add(JScrollPane(entryList), BorderLayout.CENTER)
-
-    val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, topPanel, bottomPanel)
-    split.resizeWeight = 0.75
-    split.dividerLocation = 420
-    add(split, BorderLayout.CENTER)
+    // Main content: form only (list of existing sources removed)
+    add(topPanel, BorderLayout.CENTER)
 
     // Footer status bar
     val statusPanel = JPanel(BorderLayout())
@@ -295,11 +445,27 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     publisherField.onUserChange()
     doiField.onUserChange()
     urlField.onUserChange()
-    verifiedCheck.addActionListener { markDirtyFromUser() }
+    keywordField.onUserChange()
+    sourceField.onUserChange()
+    verifiedByField.onUserChange()
+    // Abstract area changes
+    abstractArea.document.addDocumentListener(object : javax.swing.event.DocumentListener {
+      override fun insertUpdate(e: javax.swing.event.DocumentEvent) = markDirtyFromUser()
+      override fun removeUpdate(e: javax.swing.event.DocumentEvent) = markDirtyFromUser()
+      override fun changedUpdate(e: javax.swing.event.DocumentEvent) = markDirtyFromUser()
+    })
+    verifiedCheck.addActionListener {
+      if (verifiedCheck.isSelected) {
+        if (verifiedByField.text.trim().isEmpty()) verifiedByField.text = currentUserName()
+      } else {
+        verifiedByField.text = ""
+      }
+      markDirtyFromUser()
+    }
 
     // Track default borders for validation highlighting
     fun trackBorder(c: JComponent) { defaultBorders.putIfAbsent(c, c.border) }
-    listOf(authorFamilyField, authorGivenField, titleField, yearField, journalField, publisherField, doiField, urlField, authorsList).forEach { trackBorder(it) }
+    listOf(authorFamilyField, authorGivenField, titleField, yearField, journalField, publisherField, doiField, urlField, authorsList, abstractArea, keywordField, keywordsList, createdField, modifiedField, sourceField, verifiedByField, verifiedCheck).forEach { trackBorder(it) }
     // Track default label colors for all fields added
     fieldRows.values.forEach { row -> defaultLabelColors.putIfAbsent(row.label, (row.label as JComponent).foreground) }
 
@@ -338,9 +504,31 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     if ("publisher" in allowed) putIfNotEmpty("publisher", publisherField)
     if ("doi" in allowed) putIfNotEmpty("doi", doiField)
     if ("url" in allowed) putIfNotEmpty("url", urlField)
-    // Always track source; verified only if visible
-    fields["source"] = "manual entry"
-    if ("verified" in allowed) fields["verified"] = if (verifiedCheck.isSelected) "true" else "false"
+    if ("abstract" in allowed) {
+      val abs = abstractArea.text.trim()
+      if (abs.isNotEmpty()) fields["abstract"] = abs
+    }
+    if ("keywords" in allowed) {
+      val kws = collectKeywords()
+      if (kws.isNotEmpty()) fields["keywords"] = kws.joinToString(", ")
+    }
+    // Source
+    if ("source" in allowed) {
+      val src = sourceField.text.trim()
+      fields["source"] = if (src.isNotEmpty()) src else "manual"
+    }
+    // Verified and verified_by
+    if ("verified" in allowed) {
+      val isVerified = verifiedCheck.isSelected
+      fields["verified"] = if (isVerified) "true" else "false"
+      if ("verified_by" in allowed) {
+        if (isVerified) {
+          val vb = verifiedByField.text.trim()
+          fields["verified_by"] = if (vb.isNotEmpty()) vb else currentUserName()
+        }
+        // if not verified, omit verified_by so it gets removed
+      }
+    }
 
     val generatedKey = currentKey ?: java.util.UUID.randomUUID().toString()
     // If editing and type changed, remove the old entry before writing the new one
@@ -377,7 +565,14 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     publisherField.text = ""
     doiField.text = ""
     urlField.text = ""
+    abstractArea.text = ""
+    keywordsModel.clear()
+    keywordField.text = ""
+    createdField.text = ""
+    modifiedField.text = ""
+    sourceField.text = ""
     verifiedCheck.isSelected = false
+    verifiedByField.text = ""
   }
 
   private fun openSpecificLibrary() {
@@ -406,78 +601,12 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     }
   }
 
-  private fun importByDoiOrUrl() {
-    val id = importField.text.trim()
-    if (id.isEmpty()) {
-      Messages.showErrorDialog(project, "Enter a DOI, URL, or title.", "Bibliography")
-      return
-    }
-    val svc2 = project.getService(BibLibraryService::class.java)
-    val entry = svc2.importFromAny(id, null)
-    if (entry != null) {
-      Messages.showInfoMessage(project, "Imported ${entry.key}", "Bibliography")
-      refreshList(selectKey = entry.key)
-      loadEntryIntoForm(entry)
-      dirty = false
-      updateStatus()
-    } else {
-      Messages.showErrorDialog(project, "Import failed. Enter a DOI, title, URL, or direct PDF URL.", "Bibliography")
-    }
-  }
-
-  private fun importViaAi() {
-    val id = importField.text.trim()
-    if (id.isEmpty()) {
-      Messages.showErrorDialog(project, "Enter an ISBN, DOI, or URL to lookup.", "Bibliography")
-      return
-    }
-    // Always try deterministic sources first, AI as last resort
-    val svc3 = project.getService(BibLibraryService::class.java)
-    val resolved = svc3.importFromAny(id, null)
-    if (resolved != null) {
-      Messages.showInfoMessage(project, "Imported ${resolved.key}", "Bibliography")
-      refreshList(selectKey = resolved.key)
-      loadEntryIntoForm(resolved)
-      dirty = false
-      updateStatus()
-      return
-    }
-    val aiEnabled = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LookupSettingsService::class.java).isAiFallbackEnabled()
-    if (aiEnabled && AiBibliographyLookup.isAiAvailable()) {
-      val entry = AiBibliographyLookup.lookup(project, id)
-      if (entry != null) {
-        val key = entry.key
-        val augmented = entry.copy(key = key, fields = entry.fields + mapOf("source" to "automated (JetBrains AI)", "verified" to "false"))
-        val saved = project.getService(BibLibraryService::class.java).upsertEntry(augmented)
-        if (saved) {
-          Messages.showInfoMessage(project, "Imported ${key}", "Bibliography")
-          refreshList(selectKey = key)
-          loadEntryIntoForm(augmented)
-          dirty = false
-          updateStatus()
-          return
-        }
-      }
-    }
-    Messages.showErrorDialog(project, "Lookup failed across sources (OpenLibrary, Google Books, Crossref, OCLC WorldCat, BNB, openBD, LOC)" + if (aiEnabled) " and AI." else ".", "Bibliography")
-  }
+  // Import helpers via old DOI/URL UI have been removed.
 
   private fun refreshList(selectKey: String? = null) {
+    // Ensure library exists and update footer status; no list to refresh here
     val svc = project.getService(BibLibraryService::class.java)
     svc.ensureLibraryExists()
-    val entries = svc.readEntries()
-    listModel.clear()
-    val sorted = entries.sortedWith(java.util.Comparator<BibLibraryService.BibEntry> { a, b ->
-      val ta = a.fields["title"]?.trim().orEmpty()
-      val tb = b.fields["title"]?.trim().orEmpty()
-      val cmp = String.CASE_INSENSITIVE_ORDER.compare(ta, tb)
-      if (cmp != 0) cmp else a.key.compareTo(b.key)
-    })
-    sorted.forEach { listModel.addElement(it) }
-    if (selectKey != null) {
-      val idx = (0 until listModel.size()).firstOrNull { listModel.elementAt(it).key == selectKey }
-      if (idx != null) entryList.selectedIndex = idx
-    }
     updateStatus()
   }
 
@@ -505,11 +634,25 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       publisherField.text = e.fields["publisher"] ?: ""
       doiField.text = e.fields["doi"] ?: ""
       urlField.text = e.fields["url"] ?: ""
+      abstractArea.text = e.fields["abstract"] ?: ""
+      // Keywords: parse comma/semicolon-separated into list
+      keywordsModel.clear()
+      val kw = e.fields["keywords"]
+      if (!kw.isNullOrBlank()) {
+        kw.split(Regex("\\s*[,;]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }.forEach { keywordsModel.addElement(it) }
+      }
+      keywordField.text = ""
+      createdField.text = e.fields["created"] ?: ""
+      modifiedField.text = e.fields["modified"] ?: ""
+      sourceField.text = e.fields["source"] ?: ""
       verifiedCheck.isSelected = (e.fields["verified"] ?: "false").equals("true", ignoreCase = true)
+      verifiedByField.text = e.fields["verified_by"] ?: ""
       dirty = false
     } finally {
       isLoading = false
       updateStatus()
+      // Re-validate after fields are populated to clear stale errors
+      validateForm()
     }
   }
 
@@ -525,6 +668,27 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     validateForm()
   }
 
+  private fun removeSelectedAuthors() {
+    val indices = authorsList.selectedIndices
+    if (indices == null || indices.isEmpty()) return
+    // Remove from bottom to top to keep indices valid
+    for (i in indices.sortedDescending()) {
+      if (i >= 0 && i < authorsModel.size()) authorsModel.remove(i)
+    }
+    markDirtyFromUser()
+    validateForm()
+  }
+
+  private fun removeSelectedKeywords() {
+    val indices = keywordsList.selectedIndices
+    if (indices == null || indices.isEmpty()) return
+    for (i in indices.sortedDescending()) {
+      if (i >= 0 && i < keywordsModel.size()) keywordsModel.remove(i)
+    }
+    markDirtyFromUser()
+    validateForm()
+  }
+
   private fun collectAuthors(): List<AuthorName> {
     val list = mutableListOf<AuthorName>()
     for (i in 0 until authorsModel.size()) list += authorsModel.elementAt(i)
@@ -534,6 +698,99 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     if (fam.isNotEmpty() || giv.isNotEmpty()) list += AuthorName(fam, giv)
     // Ensure at least family names are present
     return list.filter { it.family.isNotBlank() || it.given.isNotBlank() }
+  }
+
+  private fun addSearchCriterion() {
+    val text = searchInput.text.trim()
+    if (text.isEmpty()) return
+    val kind = (searchTypeCombo.selectedItem as? String) ?: "Title"
+    searchCriteriaModel.addElement(SearchCriterion(kind, text))
+    searchInput.text = ""
+    searchInput.requestFocusInWindow()
+  }
+
+  private fun performSearchByCriteria() {
+    // Include pending input as a criterion if present
+    if (searchInput.text.trim().isNotEmpty()) addSearchCriterion()
+    val crits = (0 until searchCriteriaModel.size()).map { searchCriteriaModel.elementAt(it) }
+    if (crits.isEmpty()) {
+      Messages.showErrorDialog(project, "Add at least one search criterion.", "Bibliography")
+      return
+    }
+    val svc = project.getService(BibLibraryService::class.java)
+    // Priority: DOI -> URL -> ISBN -> Title(+Author) -> Author
+    fun tryImport(block: () -> BibLibraryService.BibEntry?): BibLibraryService.BibEntry? = try { block() } catch (_: Throwable) { null }
+    // DOI
+    for (c in crits.filter { it.kind.equals("DOI", true) }) {
+      tryImport { svc.importFromAny(c.text) }?.let { onImported(it); return }
+    }
+    // URL
+    for (c in crits.filter { it.kind.equals("URL", true) }) {
+      tryImport { svc.importFromAny(c.text) }?.let { onImported(it); return }
+    }
+    // ISBN
+    for (c in crits.filter { it.kind.equals("ISBN", true) }) {
+      tryImport { svc.importFromAny(c.text) }?.let { onImported(it); return }
+    }
+    // Title + optional Author
+    val title = crits.firstOrNull { it.kind.equals("Title", true) }?.text
+    val author = crits.firstOrNull { it.kind.equals("Author", true) }?.text
+    if (!title.isNullOrBlank()) {
+      val q = if (!author.isNullOrBlank()) "$title $author" else title
+      // Try media-targeted lookups based on selected type first
+      val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+      if (t in setOf("movie/film", "video", "tv/radio broadcast")) {
+        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
+      } else if (t in setOf("music", "song")) {
+        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
+      } else {
+        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
+      }
+    }
+    // Author only
+    if (!author.isNullOrBlank()) {
+      tryImport { svc.importFromAny(author) }?.let { onImported(it); return }
+    }
+
+    // Optional AI fallback
+    val aiEnabled = ApplicationManager.getApplication().getService(LookupSettingsService::class.java).isAiFallbackEnabled()
+    if (aiEnabled && AiBibliographyLookup.isAiAvailable()) {
+      val joined = crits.joinToString(" ") { it.text }
+      val entry = AiBibliographyLookup.lookup(project, joined)
+      if (entry != null) {
+        val key = entry.key
+        val augmented = entry.copy(key = key, fields = entry.fields + mapOf("source" to "automated (JetBrains AI)", "verified" to "false"))
+        val saved = svc.upsertEntry(augmented)
+        if (saved) { onImported(augmented); return }
+      }
+    }
+
+    Messages.showErrorDialog(project, "No results found using the provided criteria.", "Bibliography")
+  }
+
+  private fun onImported(entry: BibLibraryService.BibEntry) {
+    Messages.showInfoMessage(project, "Imported ${entry.key}", "Bibliography")
+    loadEntryIntoForm(entry)
+    dirty = false
+    updateStatus()
+  }
+
+  private fun addKeywordFromField() {
+    val kw = keywordField.text.trim()
+    if (kw.isEmpty()) return
+    keywordsModel.addElement(kw)
+    keywordField.text = ""
+    keywordField.requestFocusInWindow()
+    markDirtyFromUser()
+    validateForm()
+  }
+
+  private fun collectKeywords(): List<String> {
+    val list = mutableListOf<String>()
+    for (i in 0 until keywordsModel.size()) list += keywordsModel.elementAt(i)
+    val pending = keywordField.text.trim()
+    if (pending.isNotEmpty()) list += pending
+    return list.map { it.trim() }.filter { it.isNotEmpty() }
   }
 
   private fun parseAuthors(s: String): List<AuthorName> {
@@ -556,30 +813,54 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   private fun visibleKeysForSelectedType(): Set<String> {
     val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
     return when (t) {
-      "article" -> setOf("author", "title", "year", "journal", "doi", "url", "verified")
-      "book" -> setOf("author", "title", "year", "publisher", "doi", "url", "verified")
-      "inproceedings", "conference paper" -> setOf("author", "title", "year", "doi", "url", "verified")
-      "misc" -> setOf("author", "title", "year", "url", "verified")
-      "thesis (or dissertation)", "report" -> setOf("author", "title", "year", "publisher", "url", "verified")
-      "patent" -> setOf("author", "title", "year", "publisher", "url", "verified")
-      "dictionary entry" -> setOf("author", "title", "year", "publisher", "url", "verified")
-      "legislation", "regulation" -> setOf("title", "year", "publisher", "url", "verified")
-      "music", "song", "movie/film", "video", "tv/radio broadcast", "speech", "image", "website", "journal", "personal communication" -> setOf("author", "title", "year", "url", "verified")
-      else -> setOf("author", "title", "year", "url", "verified")
+      "article" -> setOf("author", "title", "year", "journal", "doi", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "book" -> setOf("author", "title", "year", "publisher", "doi", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "inproceedings", "conference paper" -> setOf("author", "title", "year", "doi", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "misc" -> setOf("author", "title", "year", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "thesis (or dissertation)", "report" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "patent" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "dictionary entry" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "legislation", "regulation" -> setOf("title", "year", "publisher", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      "music", "song", "movie/film", "video", "tv/radio broadcast", "speech", "image", "website", "journal", "personal communication" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
+      else -> setOf("author", "title", "year", "url", "abstract", "keywords", "source", "verified", "verified_by", "created", "modified")
     }
   }
 
   private fun updateVisibleFields() {
     val base = visibleKeysForSelectedType()
-    val show = base + (if ("author" in base) setOf("author_input", "author_list") else emptySet())
+    val show = base +
+      (if ("author" in base) setOf("author_input", "author_list") else emptySet()) +
+      (if ("keywords" in base) setOf("keyword_input", "keywords_list") else emptySet())
     for ((key, row) in fieldRows) {
       val visible = key in show
       row.label.isVisible = visible
       row.field.isVisible = visible
     }
+    // Update context-specific labels (e.g., Director/Artist; Studio/Label)
+    val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val (creatorSingular, creatorPlural) = roleLabelsForType(t)
+    (fieldRows["author_input"]?.label as? JLabel)?.text = creatorSingular
+    (fieldRows["author_list"]?.label as? JLabel)?.text = creatorPlural
+    (fieldRows["publisher"]?.label as? JLabel)?.text = publisherLabelForType(t)
+
     formPanel.revalidate()
     formPanel.repaint()
-    validateForm()
+    if (!isLoading) validateForm()
+  }
+
+  private fun roleLabelsForType(t: String): Pair<String, String> = when (t) {
+    "movie/film", "video" -> "Director" to "Directors"
+    "tv/radio broadcast" -> "Director" to "Directors"
+    "music", "song" -> "Artist" to "Artists"
+    "speech" -> "Speaker" to "Speakers"
+    else -> "Author" to "Authors"
+  }
+
+  private fun publisherLabelForType(t: String): String = when (t) {
+    "movie/film", "video" -> "Studio"
+    "tv/radio broadcast" -> "Network"
+    "music", "song" -> "Label"
+    else -> "Publisher"
   }
 
   private fun markDirtyFromUser() {
@@ -615,7 +896,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       row.label.foreground = defaultLabelColors[row.label] ?: row.label.foreground
       row.label.toolTipText = null
     }
-    listOf(authorFamilyField, authorGivenField, authorsList, titleField, yearField, journalField, publisherField, doiField, urlField).forEach { c ->
+    listOf(authorFamilyField, authorGivenField, authorsList, titleField, yearField, journalField, publisherField, doiField, urlField, abstractArea, keywordField, keywordsList, sourceField, verifiedByField, createdField, modifiedField).forEach { c ->
       c.toolTipText = null
     }
 
@@ -701,6 +982,10 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     } catch (_: Throwable) { false }
     if (!urlOk) { flagError("url", urlField, "URL must start with http:// or https://") ; valid = false } else clearError(urlField, "url")
 
+    // Source and Verified By are optional; clear any stale errors
+    clearError(sourceField, "source")
+    clearError(verifiedByField, "verified_by")
+
     return valid
   }
 
@@ -711,6 +996,11 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     "book" -> setOf("title", "author", "year", "publisher")
     // Proceedings: require author, title, year
     "inproceedings", "conference paper" -> setOf("title", "author", "year")
+    // Media types
+    "movie/film", "video" -> setOf("title", "author", "year", "publisher")
+    "music", "song" -> setOf("title", "author", "year", "publisher")
+    "tv/radio broadcast" -> setOf("title", "author", "year", "publisher")
+    "speech" -> setOf("title", "author", "year")
     // Thesis/report/patent/dictionary entry: require author, title, year, publisher
     "thesis (or dissertation)", "report", "patent", "dictionary entry" -> setOf("title", "author", "year", "publisher")
     // Journal document type (non-article) require author, title, year
@@ -722,29 +1012,6 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   }
 
   // Duplicate functionality removed per data model: duplicates not allowed
-
-  private fun deleteSelected() {
-    val selected = entryList.selectedValue ?: run {
-      Messages.showErrorDialog(project, "Select an entry to delete.", "Bibliography")
-      return
-    }
-    val confirm = Messages.showYesNoDialog(
-      project,
-      "Delete '${selected.key}' (${selected.type}) from library.bib?",
-      "Delete Entry",
-      "Delete",
-      "Cancel",
-      null
-    )
-    if (confirm != Messages.YES) return
-    val svc = project.getService(BibLibraryService::class.java)
-    val ok = svc.deleteEntry(selected.type, selected.key)
-    if (ok) {
-      refreshList()
-    } else {
-      Messages.showErrorDialog(project, "Failed to delete entry.", "Bibliography")
-    }
-  }
 
   private fun installVfsWatcher() {
     val svc = project.getService(BibLibraryService::class.java)
@@ -778,6 +1045,10 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
 }
 
 private fun BibLibraryService.BibEntry.yearOrEmpty(): String = fields["year"] ?: ""
+private fun currentUserName(): String {
+  val u = System.getProperty("user.name")?.trim().orEmpty()
+  return if (u.isNotEmpty()) u else "user"
+}
 
 private class BibliographyBrowserDialog(private val project: Project) : DialogWrapper(project, true) {
   private val svc = project.getService(BibLibraryService::class.java)
@@ -819,6 +1090,21 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
       override fun removeUpdate(e: DocumentEvent) = applyFilter()
       override fun changedUpdate(e: DocumentEvent) = applyFilter()
     })
+
+    // Open detail editor on double-click
+    table.addMouseListener(object : java.awt.event.MouseAdapter() {
+      override fun mouseClicked(e: java.awt.event.MouseEvent) {
+        if (e.clickCount == 2 && javax.swing.SwingUtilities.isLeftMouseButton(e)) {
+          val viewRow = table.rowAtPoint(e.point)
+          if (viewRow >= 0) {
+            val modelRow = table.convertRowIndexToModel(viewRow)
+            val row = model.rows.getOrNull(modelRow) ?: return
+            val full = loadEntry(row.originalType, row.key)
+            if (full != null) EntryDetailDialog(project, svc, full) { refresh() }.show()
+          }
+        }
+      }
+    })
   }
 
   override fun createCenterPanel(): JComponent {
@@ -851,6 +1137,9 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
   }
 
   private fun loadEntries(): List<BibLibraryService.BibEntry> = svc.readEntries()
+
+  private fun loadEntry(type: String, key: String): BibLibraryService.BibEntry? =
+    svc.readEntries().firstOrNull { it.type == type && it.key == key }
 
   private fun refresh() {
     model.setEntries(loadEntries())
@@ -902,9 +1191,17 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
       setOrRemove("publisher", row.publisher)
       setOrRemove("doi", row.doi)
       setOrRemove("url", row.url)
-      if (row.verified != null) baseFields["verified"] = if (row.verified == true) "true" else "false"
-      // Preserve source; if missing, mark it
-      baseFields.putIfAbsent("source", "manual edit (browser)")
+      if (row.verified != null) {
+        baseFields["verified"] = if (row.verified == true) "true" else "false"
+        if (row.verified == true) {
+          val vb = row.verifiedBy.trim()
+          baseFields["verified_by"] = if (vb.isNotEmpty()) vb else currentUserName()
+        } else {
+          baseFields.remove("verified_by")
+        }
+      }
+      // Preserve source; if missing, mark as manual
+      baseFields.putIfAbsent("source", "manual")
       val saved = svc.upsertEntry(BibLibraryService.BibEntry(row.currentType, row.key, baseFields))
       okAll = okAll && saved
       row.commit()
@@ -954,7 +1251,12 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
         6 -> r.publisher = (aValue as? String)?.trim().orEmpty()
         7 -> r.doi = (aValue as? String)?.trim().orEmpty()
         8 -> r.url = (aValue as? String)?.trim().orEmpty()
-        9 -> r.verified = (aValue as? Boolean) ?: false
+        9 -> {
+          val v = (aValue as? Boolean) ?: false
+          r.verified = v
+          // Auto-manage verified_by
+          r.verifiedBy = if (v) (r.verifiedBy.takeIf { !it.isNullOrBlank() } ?: currentUserName()) else ""
+        }
       }
       r.dirty = true
       fireTableRowsUpdated(rowIndex, rowIndex)
@@ -973,6 +1275,7 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
     var doi: String = entry.fields["doi"] ?: ""
     var url: String = entry.fields["url"] ?: ""
     var verified: Boolean? = (entry.fields["verified"] ?: "false").equals("true", true)
+    var verifiedBy: String = entry.fields["verified_by"] ?: ""
     var dirty: Boolean = false
 
     fun matches(q: String): Boolean {
@@ -981,5 +1284,206 @@ private class BibliographyBrowserDialog(private val project: Project) : DialogWr
     }
 
     fun commit() { dirty = false }
+  }
+
+  // Detail editor dialog for a single entry
+  private class EntryDetailDialog(
+    private val project: Project,
+    private val svc: BibLibraryService,
+    private var entry: BibLibraryService.BibEntry,
+    private val onSaved: () -> Unit
+  ) : DialogWrapper(project, true) {
+    private val typeField = JComboBox(arrayOf(
+      "article", "book", "inproceedings", "misc",
+      "music", "movie/film", "tv/radio broadcast", "website", "journal", "speech",
+      "thesis (or dissertation)", "patent", "personal communication", "dictionary entry",
+      "conference paper", "image", "legislation", "video", "song", "report", "regulation"
+    ))
+    private val titleField = JTextField()
+    private val authorField = JTextField()
+    private val yearField = JTextField().apply { columns = 4 }
+    private val journalField = JTextField()
+    private val publisherField = JTextField()
+    private val doiField = JTextField().apply { columns = 28 }
+    private val urlField = JTextField()
+    private val abstractArea = JTextArea().apply { lineWrap = true; wrapStyleWord = true; rows = 6 }
+    private val keywordsField = JTextField()
+    private val sourceField = JTextField()
+    private val verifiedCheck = JCheckBox()
+    private val verifiedByField = JTextField()
+    private val createdField = JTextField().apply { isEditable = false; isEnabled = false }
+    private val modifiedField = JTextField().apply { isEditable = false; isEnabled = false }
+
+    private val authorLabel = JLabel("Author")
+    private val publisherLabel = JLabel("Publisher")
+
+    init {
+      title = "Citation Details"
+      isResizable = true
+      initFieldsFrom(entry)
+      // Update context labels when type changes
+      (typeField as JComboBox<*>).addActionListener { updateContextLabels() }
+      updateContextLabels()
+      verifiedCheck.addActionListener {
+        if (verifiedCheck.isSelected) {
+          if (verifiedByField.text.trim().isEmpty()) verifiedByField.text = currentUserName()
+        } else {
+          verifiedByField.text = ""
+        }
+      }
+      init()
+    }
+
+    private fun initFieldsFrom(e: BibLibraryService.BibEntry) {
+      typeField.selectedItem = e.type
+      titleField.text = e.fields["title"] ?: e.fields["booktitle"] ?: ""
+      authorField.text = e.fields["author"] ?: ""
+      yearField.text = (e.fields["year"] ?: "").let { s -> Regex("\\b(\\d{4})\\b").find(s)?.groupValues?.getOrNull(1) ?: "" }
+      journalField.text = e.fields["journal"] ?: ""
+      publisherField.text = e.fields["publisher"] ?: ""
+      doiField.text = e.fields["doi"] ?: ""
+      urlField.text = e.fields["url"] ?: ""
+      abstractArea.text = e.fields["abstract"] ?: ""
+      keywordsField.text = e.fields["keywords"] ?: ""
+      sourceField.text = e.fields["source"] ?: ""
+      verifiedCheck.isSelected = (e.fields["verified"] ?: "false").equals("true", true)
+      verifiedByField.text = e.fields["verified_by"] ?: ""
+      createdField.text = e.fields["created"] ?: ""
+      modifiedField.text = e.fields["modified"] ?: ""
+    }
+
+    override fun createCenterPanel(): JComponent {
+      val panel = JPanel(GridBagLayout())
+      var row = 0
+      fun addRow(label: String, comp: JComponent, columns: Int = 1) {
+        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
+        val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = columns }
+        panel.add(JLabel(label), lc)
+        panel.add(comp, fc)
+        row++
+      }
+      // Title + Year in one row
+      run {
+        val lcTitle = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
+        panel.add(JLabel("Title"), lcTitle)
+        val fcTitle = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6) }
+        panel.add(titleField, fcTitle)
+        val lcYear = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.EAST }
+        panel.add(JLabel("Year"), lcYear)
+        val fcYear = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6) }
+        panel.add(yearField, fcYear)
+        row++
+      }
+      addRow("Type", typeField, columns = 3)
+      run {
+        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
+        val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
+        panel.add(authorLabel, lc)
+        panel.add(authorField, fc)
+        row++
+      }
+      addRow("Journal", journalField, columns = 3)
+      run {
+        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
+        val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
+        panel.add(publisherLabel, lc)
+        panel.add(publisherField, fc)
+        row++
+      }
+      addRow("DOI", doiField, columns = 3)
+      addRow("URL", urlField, columns = 3)
+      addRow("Abstract", JScrollPane(abstractArea).apply { preferredSize = java.awt.Dimension(200, 120) }, columns = 3)
+      addRow("Keywords", keywordsField, columns = 3)
+
+      // Metadata header
+      run {
+        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(8,6,2,6) }
+        val header = JLabel("Metadata")
+        panel.add(header, lc); row++
+        val sc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,6,6,6) }
+        panel.add(JSeparator(), sc); row++
+      }
+      addRow("Source", sourceField, columns = 3)
+      run {
+        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
+        panel.add(JLabel("Verified"), lc)
+        val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+        panel.add(verifiedCheck, fc)
+        val lc2 = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.EAST }
+        panel.add(JLabel("Verified By"), lc2)
+        val fc2 = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
+        panel.add(verifiedByField, fc2)
+        row++
+      }
+      addRow("Created", createdField, columns = 3)
+      addRow("Modified", modifiedField, columns = 3)
+      return panel
+    }
+
+    private fun updateContextLabels() {
+      val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+      val (creatorSingular, _) = when (t) {
+        "movie/film", "video" -> "Director" to "Directors"
+        "tv/radio broadcast" -> "Director" to "Directors"
+        "music", "song" -> "Artist" to "Artists"
+        "speech" -> "Speaker" to "Speakers"
+        else -> "Author" to "Authors"
+      }
+      authorLabel.text = creatorSingular
+      publisherLabel.text = when (t) {
+        "movie/film", "video" -> "Studio"
+        "tv/radio broadcast" -> "Network"
+        "music", "song" -> "Label"
+        else -> "Publisher"
+      }
+    }
+
+    override fun doOKAction() {
+      // Build fields map, preserving unknowns
+      val current = svc.readEntries().associateBy { it.type + "\u0000" + it.key }
+      val origType = entry.type
+      val key = entry.key
+      val orig = current[origType + "\u0000" + key]
+      val baseFields = orig?.fields?.toMutableMap() ?: mutableMapOf()
+      fun setOrRemove(k: String, v: String?) { if (v.isNullOrBlank()) baseFields.remove(k) else baseFields[k] = v }
+      setOrRemove("title", titleField.text.trim())
+      setOrRemove("author", authorField.text.trim())
+      setOrRemove("year", yearField.text.trim())
+      setOrRemove("journal", journalField.text.trim())
+      setOrRemove("publisher", publisherField.text.trim())
+      setOrRemove("doi", doiField.text.trim())
+      setOrRemove("url", urlField.text.trim())
+      setOrRemove("abstract", abstractArea.text.trim())
+      setOrRemove("keywords", keywordsField.text.trim())
+      // Source default to manual if empty
+      val src = sourceField.text.trim()
+      baseFields["source"] = if (src.isNotEmpty()) src else "manual"
+      // Verified and verified_by
+      if (verifiedCheck.isSelected) {
+        baseFields["verified"] = "true"
+        val vb = verifiedByField.text.trim()
+        baseFields["verified_by"] = if (vb.isNotEmpty()) vb else currentUserName()
+      } else {
+        baseFields["verified"] = "false"
+        baseFields.remove("verified_by")
+      }
+
+      val newType = (typeField.selectedItem as? String) ?: origType
+      // If type changed, delete old entry before write
+      if (newType != origType) svc.deleteEntry(origType, key)
+      val saved = svc.upsertEntry(BibLibraryService.BibEntry(newType, key, baseFields))
+      if (saved) {
+        // Reload to update timestamps display
+        svc.readEntries().firstOrNull { it.type == newType && it.key == key }?.let { updated ->
+          entry = updated
+          createdField.text = updated.fields["created"] ?: createdField.text
+          modifiedField.text = updated.fields["modified"] ?: modifiedField.text
+        }
+        onSaved()
+        super.doOKAction()
+      } else {
+        Messages.showErrorDialog(project, "Failed to save entry.", "Bibliography")
+      }
+    }
   }
 }

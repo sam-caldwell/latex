@@ -7,7 +7,8 @@ import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
 class IconSvgValidationTest {
-  private val iconsDir = Paths.get("intellij-latex-plugin/src/main/resources/icons")
+  // Resolve relative to the plugin module root when tests run with projectDir = intellij-latex-plugin
+  private val iconsDir = Paths.get("src/main/resources/icons")
 
   @Test
   fun `svg icons are well-formed and safe`() {
@@ -73,4 +74,3 @@ class IconSvgValidationTest {
 
   private fun org.w3c.dom.NodeList.hasElements(): Boolean = this.length > 0
 }
-

@@ -12,7 +12,7 @@ repositories {
   intellijPlatform { defaultRepositories() }
 }
 
-group = "com.samcaldwell.latex"
+group = "net.samcaldwell.latex"
 // Default version for local builds; CI uses tag-derived version if available
 var computedVersion = "0.1.1"
 val refName = System.getenv("GITHUB_REF_NAME") ?: System.getenv("GITHUB_REF")?.substringAfterLast('/')
@@ -194,7 +194,7 @@ publishing {
       }
       pom {
         name.set("intellij-latex-plugin")
-        description.set("LaTeX Tools + Preview IntelliJ plugin distribution")
+        description.set("LaTeX and Bibliography Manager IntelliJ plugin distribution")
       }
     }
   }

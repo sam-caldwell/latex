@@ -226,6 +226,10 @@ class BibLibraryService(private val project: Project) {
         LookupSettingsService.PROVIDER_LOC -> tryLocByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
       }
     }
+    // Media fallbacks: OMDb, TMDb, MusicBrainz (no API keys required for MusicBrainz; OMDb/TMDb require keys/tokens)
+    tryOmdbByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+    tryTmdbByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+    tryMusicBrainz(title = trimmed, artist = null)?.let { return withPreferredKey(it, preferredKey) }
 
     return null
   }
@@ -270,6 +274,127 @@ class BibLibraryService(private val project: Project) {
 
   private fun fetchBibtexForDoi(doi: String): String? =
     HttpUtil.get("https://doi.org/$doi", accept = "application/x-bibtex; charset=utf-8", aliases = arrayOf("doi", "doi.org"))
+
+  // ----- Movie/TV: OMDb ---------------------------------------------------
+
+  private fun tryOmdbByTitle(title: String, yearHint: String? = null): BibEntry? {
+    return try {
+      val secrets = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LatexSecretsService::class.java)
+      val apiKey = secrets.getSecret("apikey.omdb") ?: secrets.getSecret("omdb.apikey") ?: return null
+      val q = java.net.URLEncoder.encode(title, "UTF-8")
+      val y = yearHint?.takeIf { it.matches(Regex("\\d{4}")) }?.let { "&y=$it" } ?: ""
+      val json = HttpUtil.get("https://www.omdbapi.com/?t=$q$y&plot=short&apikey=$apiKey", accept = "application/json", aliases = arrayOf("omdb", "omdbapi.com", "www.omdbapi.com")) ?: return null
+      val root = com.google.gson.JsonParser.parseString(json).asJsonObject
+      if (!root.get("Response")?.asString.equals("True", true)) return null
+      val typ = root.get("Type")?.asString ?: "movie"
+      val kind = when (typ.lowercase()) {
+        "series" -> "tv/radio broadcast"
+        else -> "movie/film"
+      }
+      val f = linkedMapOf<String, String>()
+      f["title"] = root.get("Title")?.asString ?: title
+      root.get("Director")?.asString?.takeIf { it.isNotBlank() }?.let { f["author"] = it }
+      root.get("Year")?.asString?.let { yv -> safeYearFrom(yv)?.let { f["year"] = it } }
+      root.get("Production")?.asString?.takeIf { it.isNotBlank() }?.let { f["publisher"] = it }
+      root.get("Plot")?.asString?.takeIf { it.isNotBlank() }?.let { f["abstract"] = it }
+      root.get("Genre")?.asString?.takeIf { it.isNotBlank() }?.let { f["keywords"] = it }
+      val imdbId = root.get("imdbID")?.asString
+      val site = root.get("Website")?.asString
+      val url = when {
+        !imdbId.isNullOrBlank() -> "https://www.imdb.com/title/$imdbId/"
+        !site.isNullOrBlank() -> site
+        else -> null
+      }
+      url?.let { f["url"] = it }
+      return makeBibEntry(kind, f, sourceTag = "omdbapi.com")
+    } catch (_: Throwable) { null }
+  }
+
+  // ----- Movie: TMDb ------------------------------------------------------
+
+  private fun tryTmdbByTitle(title: String): BibEntry? {
+    return try {
+      val q = java.net.URLEncoder.encode(title, "UTF-8")
+      val search = HttpUtil.get("https://api.themoviedb.org/3/search/movie?query=$q&page=1", accept = "application/json", aliases = arrayOf("tmdb", "api.themoviedb.org", "themoviedb.org")) ?: return null
+      val root = com.google.gson.JsonParser.parseString(search).asJsonObject
+      val results = root.getAsJsonArray("results") ?: return null
+      if (results.size() == 0) return null
+      val r0 = results[0].asJsonObject
+      val id = r0.get("id")?.asInt ?: return null
+      val detail = HttpUtil.get("https://api.themoviedb.org/3/movie/$id?append_to_response=credits", accept = "application/json", aliases = arrayOf("tmdb", "api.themoviedb.org", "themoviedb.org")) ?: return null
+      val d = com.google.gson.JsonParser.parseString(detail).asJsonObject
+      val f = linkedMapOf<String, String>()
+      f["title"] = d.get("title")?.asString ?: title
+      d.get("release_date")?.asString?.takeIf { it.length >= 4 }?.let { f["year"] = it.substring(0,4) }
+      d.get("overview")?.asString?.takeIf { it.isNotBlank() }?.let { f["abstract"] = it }
+      // Director(s)
+      val credits = d.getAsJsonObject("credits")
+      val crew = credits?.getAsJsonArray("crew")
+      val directors = mutableListOf<String>()
+      crew?.forEach { el ->
+        val o = el.asJsonObject
+        val job = o.get("job")?.asString
+        if (job.equals("Director", true)) o.get("name")?.asString?.let { directors += it }
+      }
+      if (directors.isNotEmpty()) f["author"] = directors.joinToString(" and ")
+      // Studio
+      val studios = mutableListOf<String>()
+      d.getAsJsonArray("production_companies")?.forEach { el ->
+        el.asJsonObject.get("name")?.asString?.let { studios += it }
+      }
+      if (studios.isNotEmpty()) f["publisher"] = studios.joinToString(", ")
+      // URL
+      val homepage = d.get("homepage")?.asString
+      val url = if (!homepage.isNullOrBlank()) homepage else "https://www.themoviedb.org/movie/$id"
+      f["url"] = url
+      return makeBibEntry("movie/film", f, sourceTag = "themoviedb.org")
+    } catch (_: Throwable) { null }
+  }
+
+  // ----- Music: MusicBrainz ----------------------------------------------
+
+  private fun tryMusicBrainz(title: String?, artist: String?): BibEntry? {
+    return try {
+      val base = StringBuilder("https://musicbrainz.org/ws/2/recording/?fmt=json&limit=1&query=")
+      val parts = mutableListOf<String>()
+      if (!title.isNullOrBlank()) parts += "recording:" + java.net.URLEncoder.encode(title, "UTF-8")
+      if (!artist.isNullOrBlank()) parts += "artist:" + java.net.URLEncoder.encode(artist, "UTF-8")
+      if (parts.isEmpty()) return null
+      val url = base.append(parts.joinToString("+AND+"))
+      val json = HttpUtil.get(url.toString(), accept = "application/json", aliases = arrayOf("musicbrainz.org")) ?: return null
+      val root = com.google.gson.JsonParser.parseString(json).asJsonObject
+      val recs = root.getAsJsonArray("recordings") ?: return null
+      if (recs.size() == 0) return null
+      val r0 = recs[0].asJsonObject
+      val f = linkedMapOf<String, String>()
+      f["title"] = r0.get("title")?.asString ?: (title ?: "")
+      // Artists
+      val names = mutableListOf<String>()
+      r0.getAsJsonArray("artist-credit")?.forEach { el ->
+        val o = el.asJsonObject
+        val nm = o.get("name")?.asString ?: o.getAsJsonObject("artist")?.get("name")?.asString
+        if (!nm.isNullOrBlank()) names += nm
+      }
+      if (names.isNotEmpty()) f["author"] = names.joinToString(" and ")
+      // Year
+      val year = r0.get("first-release-date")?.asString ?: r0.get("date")?.asString
+      year?.takeIf { it.length >= 4 }?.let { f["year"] = it.substring(0,4) }
+      // Label (publisher)
+      val releases = r0.getAsJsonArray("releases")
+      val labels = mutableListOf<String>()
+      releases?.firstOrNull()?.asJsonObject?.getAsJsonArray("label-info")?.forEach { li ->
+        val lbl = li.asJsonObject.getAsJsonObject("label")?.get("name")?.asString
+        if (!lbl.isNullOrBlank()) labels += lbl
+      }
+      if (labels.isNotEmpty()) f["publisher"] = labels.joinToString(", ")
+      // URL
+      val id = r0.get("id")?.asString
+      if (!id.isNullOrBlank()) f["url"] = "https://musicbrainz.org/recording/$id"
+      // Abstract/disambiguation
+      r0.get("disambiguation")?.asString?.takeIf { it.isNotBlank() }?.let { f["abstract"] = it }
+      return makeBibEntry("song", f, sourceTag = "musicbrainz.org")
+    } catch (_: Throwable) { null }
+  }
 
   // ----- PDF import --------------------------------------------------------
 
