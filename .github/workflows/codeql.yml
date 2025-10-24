@@ -1,0 +1,53 @@
+name: CodeQL
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'java' ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Initialize CodeQL (manual build)
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: manual
+          config-file: codeql-config.yml
+
+      # Build the Kotlin/Java classes for CodeQL to analyze (manual build).
+      # Use Gradle from the plugin subproject to avoid root build assumptions.
+      - name: Build (compile Kotlin/Java + test classes)
+        run: |
+          chmod +x intellij-latex-plugin/gradlew
+          ./intellij-latex-plugin/gradlew -p intellij-latex-plugin -Dorg.gradle.jvmargs="-Xmx2g" \
+            --no-daemon --rerun-tasks clean compileKotlin compileJava testClasses
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
