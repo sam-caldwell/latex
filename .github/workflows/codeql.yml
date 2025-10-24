@@ -32,20 +32,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Initialize CodeQL
+      - name: Initialize CodeQL (manual build)
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
+          build-mode: manual
+          config-file: codeql-config.yml
 
-      # Build the Kotlin/Java classes for CodeQL to analyze.
-      # We compile only, to avoid heavy plugin packaging / IDE downloads.
-      - name: Build (compile only)
+      # Build the Kotlin/Java classes for CodeQL to analyze (manual build).
+      # Use Gradle from the plugin subproject to avoid root build assumptions.
+      - name: Build (compile Kotlin/Java + test classes)
         run: |
           chmod +x intellij-latex-plugin/gradlew
-          ./intellij-latex-plugin/gradlew -p intellij-latex-plugin -Dorg.gradle.jvmargs="-Xmx2g" compileKotlin
+          ./intellij-latex-plugin/gradlew -p intellij-latex-plugin -Dorg.gradle.jvmargs="-Xmx2g" \
+            --no-daemon --rerun-tasks clean compileKotlin compileJava testClasses
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
-

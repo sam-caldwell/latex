@@ -1,0 +1,8 @@
+name: Kotlin/Java Monorepo Config
+paths:
+  - intellij-latex-plugin/src
+paths-ignore:
+  - build
+  - intellij-latex-plugin/build
+queries:
+  - uses: security-and-quality

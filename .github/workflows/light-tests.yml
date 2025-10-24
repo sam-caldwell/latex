@@ -1,0 +1,22 @@
+name: LightPlatform Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  light-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JBR 17
+        uses: JetBrains/actions-setup-jbr@v3
+        with:
+          java-version: '17'
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v3
+      - name: Run LightPlatform tests with coverage gating
+        run: ./gradlew -p intellij-latex-plugin test lightTest jacocoTestReport jacocoTestCoverageVerification --no-daemon --stacktrace -DenableLightTests=true
+        env:
+          CI: true
