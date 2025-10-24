@@ -1,4 +1,4 @@
-.PHONY: help lint test cover cover-check build run verify clean wrapper dist
+.PHONY: help lint test test-all cover cover-check build run verify clean wrapper dist
 
 PLUGIN_DIR := intellij-latex-plugin
 GRADLEW := $(PLUGIN_DIR)/gradlew
@@ -11,6 +11,7 @@ help:()
 	@echo "Targets:"
 	@echo "  lint     - Run Gradle 'check' (code quality/tests)"
 	@echo "  test     - Run unit tests"
+	@echo "  test-all - Run all tests, including LightPlatform"
 	@echo "  cover    - Generate JaCoCo coverage report"
 	@echo "  cover-check - Verify coverage >= 80%"
 	@echo "  build    - Build plugin distribution ZIP"
@@ -24,14 +25,18 @@ lint:
 	$(GRADLE) -p $(PLUGIN_DIR) check
 
 test:
-	# Run tests and enforce coverage threshold
-	$(GRADLE) -p $(PLUGIN_DIR) test jacocoTestCoverageVerification
+	# Run all tests (unit + LightPlatform) with coverage gating
+	$(GRADLE) -p $(PLUGIN_DIR) \
+	  -DenableLightTests=true \
+	  test lightTest jacocoTestReport jacocoTestCoverageVerification
+
+test-all: test
 
 cover:
-	$(GRADLE) -p $(PLUGIN_DIR) jacocoTestReport
+	$(GRADLE) -p $(PLUGIN_DIR) -DenableLightTests=true jacocoTestReport
 
 cover-check:
-	$(GRADLE) -p $(PLUGIN_DIR) jacocoTestCoverageVerification
+	$(GRADLE) -p $(PLUGIN_DIR) -DenableLightTests=true jacocoTestCoverageVerification
 
 build:
 	$(GRADLE) -p $(PLUGIN_DIR) buildPlugin

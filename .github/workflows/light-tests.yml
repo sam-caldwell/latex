@@ -18,6 +18,10 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v3
       - name: Run LightPlatform tests with coverage gating
-        run: ./gradlew -p intellij-latex-plugin test lightTest jacocoTestReport jacocoTestCoverageVerification --no-daemon --stacktrace -DenableLightTests=true
+        run: |
+          chmod +x intellij-latex-plugin/gradlew
+          ./intellij-latex-plugin/gradlew -p intellij-latex-plugin \
+            --no-daemon --stacktrace -DenableLightTests=true \
+            test lightTest jacocoTestReport jacocoTestCoverageVerification
         env:
           CI: true

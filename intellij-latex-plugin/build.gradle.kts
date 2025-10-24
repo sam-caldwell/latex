@@ -51,6 +51,13 @@ java {
   }
 }
 
+configurations.all {
+  resolutionStrategy {
+    force("org.apache.pdfbox:pdfbox:2.0.30")
+    force("org.apache.pdfbox:fontbox:2.0.30")
+  }
+}
+
 tasks {
   runIde { jvmArgs = listOf("-Xmx2g") }
 

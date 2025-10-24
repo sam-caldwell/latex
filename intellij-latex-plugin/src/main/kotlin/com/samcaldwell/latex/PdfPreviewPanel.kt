@@ -19,7 +19,7 @@ class PdfPreviewPanel : JPanel() {
   fun loadPdf(path: Path) {
     try {
       lastPath = path
-      PDDocument.load(path.toFile()).use { doc ->
+      PdfboxCompat.loadFromFile(path.toFile()).use { doc ->
         val renderer = PDFRenderer(doc)
         val rendered = (0 until doc.numberOfPages).map { page ->
           renderer.renderImageWithDPI(page, 96f * scale, ImageType.RGB)

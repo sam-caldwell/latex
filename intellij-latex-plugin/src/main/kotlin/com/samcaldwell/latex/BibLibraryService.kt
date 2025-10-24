@@ -270,7 +270,7 @@ class BibLibraryService(private val project: Project) {
   fun importFromPdfUrl(url: String, preferredKey: String? = null): BibEntry? {
     return try {
       val bytes = HttpUtil.getBytes(url, accept = "application/pdf", aliases = arrayOf("pdf", java.net.URL(url).host)) ?: return null
-      org.apache.pdfbox.pdmodel.PDDocument.load(bytes).use { doc ->
+      PdfboxCompat.loadFromBytes(bytes).use { doc ->
         // Try XMP / document info first
         val info = doc.documentInformation
         val xmp = tryReadXmp(doc)
