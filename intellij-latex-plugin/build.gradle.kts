@@ -68,6 +68,9 @@ tasks {
 
   jacocoTestReport {
     dependsOn(test)
+    if (providers.systemProperty("enableLightTests").orNull == "true") {
+      dependsOn("lightTest")
+    }
     reports {
       xml.required.set(true)
       html.required.set(true)
@@ -91,10 +94,14 @@ tasks {
         include(includePatterns)
       }
     )
+    executionData(fileTree(layout.buildDirectory.dir("jacoco")).matching { include("*.exec") })
   }
 
   jacocoTestCoverageVerification {
     dependsOn(test)
+    if (providers.systemProperty("enableLightTests").orNull == "true") {
+      dependsOn("lightTest")
+    }
     violationRules {
       // Global minimum for the whole plugin package
       rule {
@@ -127,6 +134,7 @@ tasks {
         include(includePatterns)
       }
     )
+    executionData(fileTree(layout.buildDirectory.dir("jacoco")).matching { include("*.exec") })
   }
 
   // Also gate 'check' on coverage verification so CI fails appropriately
