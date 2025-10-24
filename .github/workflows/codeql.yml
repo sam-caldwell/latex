@@ -2,9 +2,9 @@ name: CodeQL
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["main"]
   pull_request:
-    branches: ["main", "master"]
+    branches: ["main"]
   schedule:
     - cron: '0 8 * * 1'
 
@@ -33,7 +33,7 @@ jobs:
           java-version: '17'
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
 
