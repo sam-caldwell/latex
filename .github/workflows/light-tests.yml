@@ -10,9 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JBR 17
-        uses: JetBrains/actions-setup-jbr@v3
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '17'
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v3
