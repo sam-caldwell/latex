@@ -203,7 +203,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       refreshList(selectKey = entry.key)
       loadEntryIntoForm(entry)
     } else {
-      Messages.showErrorDialog(project, "Import failed. Ensure it's a valid DOI or doi.org URL.", "Bibliography")
+      Messages.showErrorDialog(project, "Import failed. Enter a DOI, title, URL, or direct PDF URL.", "Bibliography")
     }
   }
 

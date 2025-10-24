@@ -48,7 +48,7 @@ class MissingCitationsWatcher : StartupActivity.DumbAware {
   private fun resolveKey(project: Project, key: String) {
     val id = Messages.showInputDialog(
       project,
-      "Enter DOI, URL, or title for '$key' (leave blank to create stub):",
+      "Enter DOI, URL, title, or PDF URL for '$key' (leave blank to create stub):",
       "Resolve Citation",
       null
     )

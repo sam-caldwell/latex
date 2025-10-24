@@ -44,6 +44,10 @@
     <applicationConfigurable id="com.samcaldwell.latex.Dependencies"
                              displayName="LaTeX Tools (Dependencies)"
                              instance="com.samcaldwell.latex.DependenciesConfigurable"/>
+
+    <applicationConfigurable id="com.samcaldwell.latex.LookupProviders"
+                             displayName="LaTeX Tools (Lookup Providers)"
+                             instance="com.samcaldwell.latex.LookupProvidersConfigurable"/>
   </extensions>
 
   <actions>

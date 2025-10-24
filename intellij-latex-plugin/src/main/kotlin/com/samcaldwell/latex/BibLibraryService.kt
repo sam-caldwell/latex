@@ -142,8 +142,14 @@ class BibLibraryService(private val project: Project) {
     }
     // 2) URL → attempt to extract DOI from page content first
     if (looksLikeUrl(trimmed)) {
+      // 2a) If looks like a PDF URL, try parsing PDF for DOI/metadata
+      if (isLikelyPdfUrl(trimmed)) {
+        importFromPdfUrl(trimmed, preferredKey)?.let { return it }
+      }
       val doi = extractDoiFromUrl(trimmed)
       if (doi != null) return importFromDoiOrUrl(doi, preferredKey)
+      // 2b) As a fallback, try to treat the URL as a PDF even if it doesn't end with .pdf
+      importFromPdfUrl(trimmed, preferredKey)?.let { return it }
     }
 
     // 3) ISBN or Title lookup through a cascade of sources
@@ -184,6 +190,9 @@ class BibLibraryService(private val project: Project) {
 
   private fun looksLikeUrl(s: String): Boolean = s.startsWith("http://") || s.startsWith("https://")
 
+  private fun isLikelyPdfUrl(url: String): Boolean =
+    Regex("(?i)\\.pdf(\\?.*)?(#.*)?$").containsMatchIn(url)
+
   private fun extractDoiFromUrl(url: String): String? {
     val content = HttpUtil.get(url) ?: return null
     val patterns = listOf(
@@ -207,6 +216,101 @@ class BibLibraryService(private val project: Project) {
 
   private fun fetchBibtexForDoi(doi: String): String? =
     HttpUtil.get("https://doi.org/$doi", accept = "application/x-bibtex; charset=utf-8", aliases = arrayOf("doi", "doi.org"))
+
+  // ----- PDF import --------------------------------------------------------
+
+  fun importFromPdfUrl(url: String, preferredKey: String? = null): BibEntry? {
+    return try {
+      val bytes = HttpUtil.getBytes(url, accept = "application/pdf", aliases = arrayOf("pdf", java.net.URL(url).host)) ?: return null
+      org.apache.pdfbox.pdmodel.PDDocument.load(bytes).use { doc ->
+        // Try XMP / document info first
+        val info = doc.documentInformation
+        val xmp = tryReadXmp(doc)
+
+        // DOI from XMP or text
+        val doi = xmp?.let { findDoi(it) } ?: findDoi(extractText(doc, 1, 2))
+        if (!doi.isNullOrBlank()) {
+          importFromDoiOrUrl(doi, preferredKey)?.let { return it }
+        }
+
+        // Build a minimal entry from metadata + first pages
+        val text = extractText(doc, 1, 2)
+        val fields = linkedMapOf<String, String>()
+        val title = xmp?.let { findXmpTitle(it) } ?: info.title ?: guessTitle(text)
+        val authors = xmp?.let { findXmpCreators(it) } ?: parseAuthors(info.author)
+        val year = info.creationDate?.let { it.get(java.util.Calendar.YEAR).toString() } ?: safeYearFrom(text)
+        if (!authors.isNullOrBlank()) fields["author"] = authors
+        if (!title.isNullOrBlank()) fields["title"] = title
+        if (!year.isNullOrBlank()) fields["year"] = year
+        fields["url"] = url
+        val type = if (text.contains("Proceedings", true) || text.contains("conference", true)) "inproceedings" else "article"
+        val entry = makeBibEntry(type, fields)
+        return withPreferredKey(entry, preferredKey)
+      }
+    } catch (_: Throwable) { null }
+  }
+
+  private fun tryReadXmp(doc: org.apache.pdfbox.pdmodel.PDDocument): String? {
+    return try {
+      val md = doc.documentCatalog.metadata ?: return null
+      md.createInputStream().use { it.readBytes().toString(Charsets.UTF_8) }
+    } catch (_: Throwable) { null }
+  }
+
+  private fun extractText(doc: org.apache.pdfbox.pdmodel.PDDocument, start: Int, end: Int): String {
+    return try {
+      val stripper = org.apache.pdfbox.text.PDFTextStripper()
+      stripper.startPage = start
+      stripper.endPage = kotlin.math.min(end, doc.numberOfPages)
+      stripper.getText(doc)
+    } catch (_: Throwable) { "" }
+  }
+
+  private fun findDoi(text: String): String? {
+    val patterns = listOf(
+      Pattern.compile("https?://doi\\.org/(10\\.[^\\\\\"'<>\\\\s]+)", Pattern.CASE_INSENSITIVE),
+      Pattern.compile("doi:?(10\\.[^\\\\\"'<>\\\\s]+)", Pattern.CASE_INSENSITIVE),
+      Pattern.compile("(10\\.[^\\s]+/[^\\s]+)")
+    )
+    for (p in patterns) {
+      val m = p.matcher(text)
+      if (m.find()) return m.group(1)
+    }
+    return null
+  }
+
+  private fun findXmpTitle(xmp: String): String? {
+    val m1 = Pattern.compile("<dc:title>[\\s\\S]*?<rdf:li[^>]*>([\\s\\S]*?)</rdf:li>", Pattern.CASE_INSENSITIVE).matcher(xmp)
+    if (m1.find()) return m1.group(1).trim()
+    val m2 = Pattern.compile("<dc:title>([\\s\\S]*?)</dc:title>", Pattern.CASE_INSENSITIVE).matcher(xmp)
+    return if (m2.find()) m2.group(1).trim() else null
+  }
+
+  private fun findXmpCreators(xmp: String): String? {
+    val creatorsBlock = Pattern.compile("<dc:creator>[\\s\\S]*?</dc:creator>", Pattern.CASE_INSENSITIVE).matcher(xmp).let { m -> if (m.find()) m.group() else null } ?: return null
+    val items = Pattern.compile("<rdf:li[^>]*>([\\s\\S]*?)</rdf:li>", Pattern.CASE_INSENSITIVE).matcher(creatorsBlock)
+    val list = mutableListOf<String>()
+    while (items.find()) list += items.group(1).trim()
+    return joinAuthors(list)
+  }
+
+  private fun guessTitle(text: String): String? {
+    val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    for (ln in lines.take(30)) {
+      val lower = ln.lowercase()
+      if (lower.startsWith("abstract") || lower.startsWith("doi:")) continue
+      if (ln.length >= 15 && ln.split(" ").size >= 3) return ln
+    }
+    return null
+  }
+
+  private fun parseAuthors(raw: String?): String? {
+    if (raw.isNullOrBlank()) return null
+    // Split on common separators and rebuild with BibTeX 'and'
+    val parts = raw.split(';', ',', '&').map { it.trim() }.filter { it.isNotEmpty() }
+    if (parts.size <= 1) return raw
+    return parts.joinToString(" and ")
+  }
 
   // ----- Helpers for multi-source ISBN/Title resolution --------------------
 
@@ -375,7 +479,7 @@ class BibLibraryService(private val project: Project) {
   }
 
   private fun tryWorldCatByIsbn(isbn: String): BibEntry? {
-    val url = "http://classify.oclc.org/classify2/Classify?isbn=$isbn&summary=true"
+    val url = "https://classify.oclc.org/classify2/Classify?isbn=$isbn&summary=true"
     val xml = HttpUtil.get(url, accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
     val m = Pattern.compile("<work[^>]*title=\"([^\"]+)\"[^>]*author=\"([^\"]*)\"[^>]*hyr=\"(\\d{4})?\"").matcher(xml)
     if (!m.find()) return null
@@ -392,7 +496,7 @@ class BibLibraryService(private val project: Project) {
 
   private fun tryWorldCatByTitle(title: String): BibEntry? {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
-    val xml = HttpUtil.get("http://classify.oclc.org/classify2/Classify?title=$q&summary=true", accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
+    val xml = HttpUtil.get("https://classify.oclc.org/classify2/Classify?title=$q&summary=true", accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
     val m = Pattern.compile("<work[^>]*title=\"([^\"]+)\"[^>]*author=\"([^\"]*)\"[^>]*hyr=\"(\\d{4})?\"").matcher(xml)
     if (!m.find()) return null
     val f = linkedMapOf<String, String>()
