@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "github-actions"]
+
+  # Keep Gradle dependencies in the plugin project up to date
+  - package-ecosystem: "gradle"
+    directory: "/intellij-latex-plugin"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "gradle"]
+    # Group related updates to reduce PR noise
+    groups:
+      kotlin-and-intellij:
+        patterns:
+          - "org.jetbrains.kotlin*"
+          - "org.jetbrains.intellij*"
+      testing-and-tools:
+        patterns:
+          - "com.google.code.gson*"
+          - "org.apache.pdfbox*"
