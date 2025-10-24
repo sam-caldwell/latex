@@ -223,7 +223,8 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       loadEntryIntoForm(resolved)
       return
     }
-    if (AiBibliographyLookup.isAiAvailable()) {
+    val aiEnabled = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LookupSettingsService::class.java).isAiFallbackEnabled()
+    if (aiEnabled && AiBibliographyLookup.isAiAvailable()) {
       val entry = AiBibliographyLookup.lookup(project, id)
       if (entry != null) {
         val key = preferredKey ?: entry.key
@@ -236,7 +237,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
         }
       }
     }
-    Messages.showErrorDialog(project, "Lookup failed across sources (OpenLibrary, Google Books, Crossref, OCLC WorldCat, BNB, openBD, LOC) and AI.", "Bibliography")
+    Messages.showErrorDialog(project, "Lookup failed across sources (OpenLibrary, Google Books, Crossref, OCLC WorldCat, BNB, openBD, LOC)" + if (aiEnabled) " and AI." else ".", "Bibliography")
   }
 
   private fun refreshList(selectKey: String? = null) {

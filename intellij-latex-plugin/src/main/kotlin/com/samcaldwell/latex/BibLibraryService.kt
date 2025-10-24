@@ -6,6 +6,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -13,6 +16,9 @@ import java.nio.file.Paths
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.regex.Pattern
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
+import java.io.ByteArrayInputStream
 
 @Service(Service.Level.PROJECT)
 class BibLibraryService(private val project: Project) {
@@ -154,27 +160,36 @@ class BibLibraryService(private val project: Project) {
 
     // 3) ISBN or Title lookup through a cascade of sources
     val isbn = extractIsbn(trimmed)
+    val settings = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LookupSettingsService::class.java)
     if (isbn != null) {
-      // For ISBN, prefer: OpenLibrary → Google Books → Crossref → WorldCat Classify → BNB SPARQL → openBD (JP) → US LOC
-      tryOpenLibraryByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryGoogleBooksByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryCrossrefByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryWorldCatByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryBnbByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryOpenBdByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
-      tryLocByIsbn(isbn)?.let { return withPreferredKey(it, preferredKey) }
+      val providers = settings.providersForQuery(true)
+      for (p in providers) {
+        val entry = when (p) {
+          LookupSettingsService.PROVIDER_OPENLIBRARY -> tryOpenLibraryByIsbn(isbn)
+          LookupSettingsService.PROVIDER_GOOGLEBOOKS -> tryGoogleBooksByIsbn(isbn)
+          LookupSettingsService.PROVIDER_CROSSREF -> tryCrossrefByIsbn(isbn)
+          LookupSettingsService.PROVIDER_WORLDCAT -> tryWorldCatByIsbn(isbn)
+          LookupSettingsService.PROVIDER_BNB -> tryBnbByIsbn(isbn)
+          LookupSettingsService.PROVIDER_OPENBD -> tryOpenBdByIsbn(isbn)
+          LookupSettingsService.PROVIDER_LOC -> tryLocByIsbn(isbn)
+          else -> null
+        }
+        if (entry != null) return withPreferredKey(entry, preferredKey)
+      }
       return null
     }
 
-    // Treat input as a title query: OpenLibrary → Google Books → Crossref REST → WorldCat Classify → BNB SPARQL → US LOC
-    tryOpenLibraryByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
-    tryGoogleBooksByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
-    crossrefFindDoiByTitle(trimmed)?.let { doi ->
-      importFromDoiOrUrl(doi, preferredKey)?.let { return it }
+    val providers = settings.providersForQuery(false)
+    for (p in providers) {
+      when (p) {
+        LookupSettingsService.PROVIDER_OPENLIBRARY -> tryOpenLibraryByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+        LookupSettingsService.PROVIDER_GOOGLEBOOKS -> tryGoogleBooksByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+        LookupSettingsService.PROVIDER_CROSSREF -> crossrefFindDoiByTitle(trimmed)?.let { doi -> importFromDoiOrUrl(doi, preferredKey)?.let { return it } }
+        LookupSettingsService.PROVIDER_WORLDCAT -> tryWorldCatByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+        LookupSettingsService.PROVIDER_BNB -> tryBnbByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+        LookupSettingsService.PROVIDER_LOC -> tryLocByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
+      }
     }
-    tryWorldCatByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
-    tryBnbByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
-    tryLocByTitle(trimmed)?.let { return withPreferredKey(it, preferredKey) }
 
     return null
   }
@@ -355,63 +370,54 @@ class BibLibraryService(private val project: Project) {
   private fun joinAuthors(list: List<String>): String? =
     list.map { it.trim() }.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }?.joinToString(" and ")
 
-  private fun jsonFindString(json: String, field: String): String? {
-    val m = Pattern.compile("\\\"${Pattern.quote(field)}\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json)
-    return if (m.find()) m.group(1) else null
-  }
-
-  private fun jsonFindArray(json: String, field: String): List<String> {
-    val m = Pattern.compile("\\\"${Pattern.quote(field)}\\\"\\s*:\\s*\\[([^]]*)\\]").matcher(json)
-    if (!m.find()) return emptyList()
-    val body = m.group(1)
-    val item = Pattern.compile("\\\"([^\\\"]*)\\\"")
-    val r = item.matcher(body)
-    val out = mutableListOf<String>()
-    while (r.find()) out += r.group(1)
-    return out
-  }
-
   private fun tryOpenLibraryByIsbn(isbn: String): BibEntry? {
     val url = "https://openlibrary.org/api/books?bibkeys=ISBN:$isbn&format=json&jscmd=data"
     val json = HttpUtil.get(url, accept = "application/json", aliases = arrayOf("openlibrary", "openlibrary.org")) ?: return null
-    // The root is an object with key "ISBN:isbn"
-    val keyMatch = Pattern.compile("\\\"ISBN:$isbn\\\"\\s*:\\s*\\{([\\s\\S]*?)}\\s*(,|})").matcher(json)
-    if (!keyMatch.find()) return null
-    val obj = keyMatch.group(1)
-    val title = jsonFindString(obj, "title")
-    val publishers = jsonFindArray(obj, "publishers")
-    val authorsNames = Pattern.compile("\\\"authors\\\"\\s*:\\s*\\[([\\s\\S]*?)\\]").matcher(obj).let { m ->
-      if (m.find()) {
-        val arr = m.group(1)
-        val n = Pattern.compile("\\\"name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
-        val mm = n.matcher(arr)
-        val out = mutableListOf<String>()
-        while (mm.find()) out += mm.group(1)
-        out
-      } else emptyList()
-    }
-    val date = jsonFindString(obj, "publish_date")
-    val year = safeYearFrom(date)
+    val root = JsonParser.parseString(json).asJsonObject
+    val node = root.getAsJsonObject("ISBN:$isbn") ?: return null
+    val title = node.get("title")?.asString
     if (title.isNullOrBlank()) return null
+    val publishers = mutableListOf<String>()
+    val pubsEl = node.get("publishers")
+    if (pubsEl != null && pubsEl.isJsonArray) {
+      for (el in pubsEl.asJsonArray) {
+        val v = if (el.isJsonObject) el.asJsonObject.get("name")?.asString else el.asString
+        if (!v.isNullOrBlank()) publishers += v
+      }
+    }
+    val authorNames = mutableListOf<String>()
+    val authorsEl = node.get("authors")
+    if (authorsEl != null && authorsEl.isJsonArray) {
+      for (el in authorsEl.asJsonArray) {
+        val name = if (el.isJsonObject) el.asJsonObject.get("name")?.asString else el.asString
+        if (!name.isNullOrBlank()) authorNames += name
+      }
+    }
+    val date = node.get("publish_date")?.asString
+    val year = safeYearFrom(date)
     val f = linkedMapOf<String, String>()
-    joinAuthors(authorsNames)?.let { f["author"] = it }
+    joinAuthors(authorNames)?.let { f["author"] = it }
     f["title"] = title
     year?.let { f["year"] = it }
     if (publishers.isNotEmpty()) f["publisher"] = publishers.first()
     f["isbn"] = isbn
-    jsonFindString(obj, "url")?.let { f["url"] = it }
+    node.get("url")?.asString?.let { f["url"] = it }
     return makeBibEntry("book", f)
   }
 
   private fun tryOpenLibraryByTitle(title: String): BibEntry? {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
     val json = HttpUtil.get("https://openlibrary.org/search.json?limit=1&title=$q", accept = "application/json", aliases = arrayOf("openlibrary", "openlibrary.org")) ?: return null
-    val doc = Pattern.compile("\\\"docs\\\"\\s*:\\s*\\[([\\s\\S]*?)\\]").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val titleFound = jsonFindString(doc, "title") ?: jsonFindString(doc, "title_suggest")
+    val root = JsonParser.parseString(json).asJsonObject
+    val docs = root.getAsJsonArray("docs") ?: return null
+    if (docs.size() == 0) return null
+    val d0 = docs[0].asJsonObject
+    val titleFound = d0.get("title")?.asString ?: d0.get("title_suggest")?.asString
     if (titleFound.isNullOrBlank()) return null
-    val authors = jsonFindArray(doc, "author_name")
-    val year = jsonFindString(doc, "first_publish_year") ?: jsonFindString(doc, "publish_year")
-    val isbn = jsonFindArray(doc, "isbn").firstOrNull()
+    val authors = mutableListOf<String>()
+    d0.getAsJsonArray("author_name")?.forEach { el -> el.asString?.let { authors += it } }
+    val year = d0.get("first_publish_year")?.asString ?: d0.get("publish_year")?.asString
+    val isbn = d0.getAsJsonArray("isbn")?.firstOrNull()?.asString
     // If ISBN surfaced, prefer proceeding to DOI via other services later; we can still build a book entry now.
     val f = linkedMapOf<String, String>()
     joinAuthors(authors)?.let { f["author"] = it }
@@ -423,12 +429,15 @@ class BibLibraryService(private val project: Project) {
 
   private fun tryGoogleBooksByIsbn(isbn: String): BibEntry? {
     val json = HttpUtil.get("https://www.googleapis.com/books/v1/volumes?q=isbn:$isbn&maxResults=1", accept = "application/json", aliases = arrayOf("googlebooks", "books.googleapis.com", "www.googleapis.com")) ?: return null
-    val vi = Pattern.compile("\\\"volumeInfo\\\"\\s*:\\s*\\{([\\s\\S]*?)\\}").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val title = jsonFindString(vi, "title")
-    if (title.isNullOrBlank()) return null
-    val authors = jsonFindArray(vi, "authors")
-    val publisher = jsonFindString(vi, "publisher")
-    val date = jsonFindString(vi, "publishedDate")
+    val root = JsonParser.parseString(json).asJsonObject
+    val items = root.getAsJsonArray("items") ?: return null
+    if (items.size() == 0) return null
+    val vi = items[0].asJsonObject.getAsJsonObject("volumeInfo") ?: return null
+    val title = vi.get("title")?.asString ?: return null
+    val authors = mutableListOf<String>()
+    vi.getAsJsonArray("authors")?.forEach { el -> el.asString?.let { authors += it } }
+    val publisher = vi.get("publisher")?.asString
+    val date = vi.get("publishedDate")?.asString
     val year = safeYearFrom(date)
     val f = linkedMapOf<String, String>()
     joinAuthors(authors)?.let { f["author"] = it }
@@ -442,11 +451,15 @@ class BibLibraryService(private val project: Project) {
   private fun tryGoogleBooksByTitle(title: String): BibEntry? {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
     val json = HttpUtil.get("https://www.googleapis.com/books/v1/volumes?q=intitle:$q&maxResults=1", accept = "application/json", aliases = arrayOf("googlebooks", "books.googleapis.com", "www.googleapis.com")) ?: return null
-    val vi = Pattern.compile("\\\"volumeInfo\\\"\\s*:\\s*\\{([\\s\\S]*?)\\}").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val titleFound = jsonFindString(vi, "title") ?: return null
-    val authors = jsonFindArray(vi, "authors")
-    val publisher = jsonFindString(vi, "publisher")
-    val date = jsonFindString(vi, "publishedDate")
+    val root = JsonParser.parseString(json).asJsonObject
+    val items = root.getAsJsonArray("items") ?: return null
+    if (items.size() == 0) return null
+    val vi = items[0].asJsonObject.getAsJsonObject("volumeInfo") ?: return null
+    val titleFound = vi.get("title")?.asString ?: return null
+    val authors = mutableListOf<String>()
+    vi.getAsJsonArray("authors")?.forEach { el -> el.asString?.let { authors += it } }
+    val publisher = vi.get("publisher")?.asString
+    val date = vi.get("publishedDate")?.asString
     val year = safeYearFrom(date)
     val f = linkedMapOf<String, String>()
     joinAuthors(authors)?.let { f["author"] = it }
@@ -459,17 +472,25 @@ class BibLibraryService(private val project: Project) {
   private fun tryCrossrefByIsbn(isbn: String): BibEntry? {
     val q = java.net.URLEncoder.encode(isbn, "UTF-8")
     val json = HttpUtil.get("https://api.crossref.org/works?rows=1&query.bibliographic=$q", accept = "application/json", aliases = arrayOf("crossref", "api.crossref.org")) ?: return null
-    val doi = Pattern.compile("\\\"DOI\\\"\\s*:\\s*\\\"(10\\.[^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val root = JsonParser.parseString(json).asJsonObject
+    val message = root.getAsJsonObject("message") ?: return null
+    val items = message.getAsJsonArray("items") ?: return null
+    if (items.size() == 0) return null
+    val item = items[0].asJsonObject
+    val doi = item.get("DOI")?.asString
     if (!doi.isNullOrBlank()) {
       val bib = fetchBibtexForDoi(doi)
       if (!bib.isNullOrBlank()) return parseSingleEntry(bib)
     }
-    // Fall back to building a minimal entry if title present
-    val titleArr = Pattern.compile("\\\"title\\\"\\s*:\\s*\\[\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
-    if (!titleArr.isNullOrBlank()) {
-      val year = Pattern.compile("\\\"issued\\\"[^{]*\\{[^}]*\\[\\s*(\\d{4})").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val titleArr = item.getAsJsonArray("title")
+    val title = titleArr?.firstOrNull()?.asString
+    if (!title.isNullOrBlank()) {
+      val dateParts = item.getAsJsonObject("issued")?.getAsJsonArray("date-parts")
+      val year = try {
+        dateParts?.firstOrNull()?.asJsonArray?.firstOrNull()?.asInt?.toString()
+      } catch (_: Throwable) { null }
       val f = linkedMapOf<String, String>()
-      f["title"] = titleArr
+      f["title"] = title
       year?.let { f["year"] = it }
       f["isbn"] = isbn
       if (!doi.isNullOrBlank()) f["doi"] = doi
@@ -481,11 +502,10 @@ class BibLibraryService(private val project: Project) {
   private fun tryWorldCatByIsbn(isbn: String): BibEntry? {
     val url = "https://classify.oclc.org/classify2/Classify?isbn=$isbn&summary=true"
     val xml = HttpUtil.get(url, accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
-    val m = Pattern.compile("<work[^>]*title=\"([^\"]+)\"[^>]*author=\"([^\"]*)\"[^>]*hyr=\"(\\d{4})?\"").matcher(xml)
-    if (!m.find()) return null
-    val title = m.group(1)
-    val author = m.group(2)
-    val year = m.group(3)
+    val parsed = parseWorldCatXml(xml) ?: return null
+    val title = parsed["title"]
+    val author = parsed["author"]
+    val year = parsed["year"]
     val f = linkedMapOf<String, String>()
     if (!author.isNullOrBlank()) f["author"] = author
     f["title"] = title
@@ -497,13 +517,12 @@ class BibLibraryService(private val project: Project) {
   private fun tryWorldCatByTitle(title: String): BibEntry? {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
     val xml = HttpUtil.get("https://classify.oclc.org/classify2/Classify?title=$q&summary=true", accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
-    val m = Pattern.compile("<work[^>]*title=\"([^\"]+)\"[^>]*author=\"([^\"]*)\"[^>]*hyr=\"(\\d{4})?\"").matcher(xml)
-    if (!m.find()) return null
+    val m = parseWorldCatXml(xml) ?: return null
     val f = linkedMapOf<String, String>()
-    val author = m.group(2)
+    val author = m["author"]
     if (!author.isNullOrBlank()) f["author"] = author
-    f["title"] = m.group(1)
-    m.group(3)?.let { f["year"] = it }
+    f["title"] = m["title"] ?: return null
+    m["year"]?.let { f["year"] = it }
     return makeBibEntry("book", f)
   }
 
@@ -518,10 +537,14 @@ class BibLibraryService(private val project: Project) {
     """.trimIndent()
     val q = java.net.URLEncoder.encode(query, "UTF-8")
     val json = HttpUtil.get("https://bnb.data.bl.uk/sparql?query=$q", accept = "application/sparql-results+json", aliases = arrayOf("bnb", "bnb.data.bl.uk")) ?: return null
-    val title = Pattern.compile("\\\"title\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val root = JsonParser.parseString(json).asJsonObject
+    val bindings = root.getAsJsonObject("results")?.getAsJsonArray("bindings") ?: return null
+    if (bindings.size() == 0) return null
+    val b0 = bindings[0].asJsonObject
+    val title = b0.getAsJsonObject("title")?.get("value")?.asString
     if (title.isNullOrBlank()) return null
-    val creator = Pattern.compile("\\\"creator\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
-    val date = Pattern.compile("\\\"date\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val creator = b0.getAsJsonObject("creator")?.get("value")?.asString
+    val date = b0.getAsJsonObject("date")?.get("value")?.asString
     val f = linkedMapOf<String, String>()
     if (!creator.isNullOrBlank()) f["author"] = creator
     f["title"] = title
@@ -542,10 +565,14 @@ class BibLibraryService(private val project: Project) {
     """.trimIndent()
     val q = java.net.URLEncoder.encode(sparql, "UTF-8")
     val json = HttpUtil.get("https://bnb.data.bl.uk/sparql?query=$q", accept = "application/sparql-results+json", aliases = arrayOf("bnb", "bnb.data.bl.uk")) ?: return null
-    val titleFound = Pattern.compile("\\\"title\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val root = JsonParser.parseString(json).asJsonObject
+    val bindings = root.getAsJsonObject("results")?.getAsJsonArray("bindings") ?: return null
+    if (bindings.size() == 0) return null
+    val b0 = bindings[0].asJsonObject
+    val titleFound = b0.getAsJsonObject("title")?.get("value")?.asString
     if (titleFound.isNullOrBlank()) return null
-    val creator = Pattern.compile("\\\"creator\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
-    val date = Pattern.compile("\\\"date\\\"\\s*:\\s*\\{[^{]*\\\"value\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(json).let { m -> if (m.find()) m.group(1) else null }
+    val creator = b0.getAsJsonObject("creator")?.get("value")?.asString
+    val date = b0.getAsJsonObject("date")?.get("value")?.asString
     val f = linkedMapOf<String, String>()
     if (!creator.isNullOrBlank()) f["author"] = creator
     f["title"] = titleFound
@@ -555,13 +582,14 @@ class BibLibraryService(private val project: Project) {
 
   private fun tryOpenBdByIsbn(isbn: String): BibEntry? {
     val json = HttpUtil.get("https://api.openbd.jp/v1/get?isbn=$isbn", accept = "application/json", aliases = arrayOf("openbd", "openbd.jp")) ?: return null
-    // Response is an array; if first element is null, not found
-    if (json.contains("[null]")) return null
-    val summary = Pattern.compile("\\\"summary\\\"\\s*:\\s*\\{([\\s\\S]*?)\\}").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val title = jsonFindString(summary, "title") ?: return null
-    val author = jsonFindString(summary, "author")
-    val publisher = jsonFindString(summary, "publisher")
-    val pubdate = jsonFindString(summary, "pubdate")
+    val arr = JsonParser.parseString(json).asJsonArray
+    if (arr.size() == 0 || arr[0].isJsonNull) return null
+    val root = arr[0].asJsonObject
+    val summary = root.getAsJsonObject("summary") ?: return null
+    val title = summary.get("title")?.asString ?: return null
+    val author = summary.get("author")?.asString
+    val publisher = summary.get("publisher")?.asString
+    val pubdate = summary.get("pubdate")?.asString
     val year = safeYearFrom(pubdate)
     val f = linkedMapOf<String, String>()
     if (!author.isNullOrBlank()) f["author"] = author
@@ -574,11 +602,14 @@ class BibLibraryService(private val project: Project) {
 
   private fun tryLocByIsbn(isbn: String): BibEntry? {
     val json = HttpUtil.get("https://www.loc.gov/books/?q=isbn:$isbn&fo=json", accept = "application/json", aliases = arrayOf("loc", "loc.gov", "libraryofcongress")) ?: return null
-    val item = Pattern.compile("\\\"results\\\"\\s*:\\s*\\[([\\s\\S]*?)\\]").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val title = jsonFindString(item, "title") ?: return null
-    val creator = jsonFindString(item, "creator")
-    val publisher = jsonFindString(item, "publisher")
-    val date = jsonFindString(item, "date")
+    val root = JsonParser.parseString(json).asJsonObject
+    val results = root.getAsJsonArray("results") ?: return null
+    if (results.size() == 0) return null
+    val item = results[0].asJsonObject
+    val title = item.get("title")?.asString ?: return null
+    val creator = item.get("creator")?.asString
+    val publisher = item.get("publisher")?.asString
+    val date = item.get("date")?.asString
     val f = linkedMapOf<String, String>()
     if (!creator.isNullOrBlank()) f["author"] = creator
     f["title"] = title
@@ -591,17 +622,39 @@ class BibLibraryService(private val project: Project) {
   private fun tryLocByTitle(title: String): BibEntry? {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
     val json = HttpUtil.get("https://www.loc.gov/books/?q=$q&fo=json", accept = "application/json", aliases = arrayOf("loc", "loc.gov", "libraryofcongress")) ?: return null
-    val item = Pattern.compile("\\\"results\\\"\\s*:\\s*\\[([\\s\\S]*?)\\]").matcher(json).let { m -> if (m.find()) m.group(1) else null } ?: return null
-    val titleFound = jsonFindString(item, "title") ?: return null
-    val creator = jsonFindString(item, "creator")
-    val publisher = jsonFindString(item, "publisher")
-    val date = jsonFindString(item, "date")
+    val root = JsonParser.parseString(json).asJsonObject
+    val results = root.getAsJsonArray("results") ?: return null
+    if (results.size() == 0) return null
+    val item = results[0].asJsonObject
+    val titleFound = item.get("title")?.asString ?: return null
+    val creator = item.get("creator")?.asString
+    val publisher = item.get("publisher")?.asString
+    val date = item.get("date")?.asString
     val f = linkedMapOf<String, String>()
     if (!creator.isNullOrBlank()) f["author"] = creator
     f["title"] = titleFound
     safeYearFrom(date)?.let { f["year"] = it }
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
     return makeBibEntry("book", f)
+  }
+
+  private fun parseWorldCatXml(xml: String): Map<String, String>? {
+    return try {
+      val dbf = DocumentBuilderFactory.newInstance()
+      dbf.isNamespaceAware = false
+      val doc = dbf.newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8)))
+      val nodes = doc.getElementsByTagName("work")
+      if (nodes.length == 0) return null
+      val el = nodes.item(0) as Element
+      val title = el.getAttribute("title") ?: return null
+      val author = el.getAttribute("author")
+      val year = el.getAttribute("hyr")
+      val map = mutableMapOf<String, String>()
+      map["title"] = title
+      if (!author.isNullOrBlank()) map["author"] = author
+      if (!year.isNullOrBlank()) map["year"] = year
+      map
+    } catch (_: Throwable) { null }
   }
 
   fun parseSingleEntry(bibtex: String): BibEntry? {

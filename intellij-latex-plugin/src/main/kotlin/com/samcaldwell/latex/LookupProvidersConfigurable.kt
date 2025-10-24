@@ -20,7 +20,8 @@ class LookupProvidersConfigurable : Configurable {
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.cellRenderer = object : ListCellRenderer<ProviderItem> {
       override fun getListCellRendererComponent(list: JList<out ProviderItem>?, value: ProviderItem?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): Component {
-        val cb = JCheckBox(value?.name ?: "").apply { isSelected = value?.enabled == true }
+        val cb = JCheckBox(value?.name ?: "")
+        cb.isSelected = value?.enabled == true
         cb.isOpaque = true
         cb.background = if (isSelected) list?.selectionBackground else list?.background
         cb.foreground = if (isSelected) list?.selectionForeground else list?.foreground
@@ -126,4 +127,3 @@ class LookupProvidersConfigurable : Configurable {
 
   override fun reset() { loadFromService() }
 }
-

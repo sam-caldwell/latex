@@ -14,6 +14,7 @@ version = "0.1.0"
 // IntelliJ Platform & bundled plugin dependencies (2.x DSL)
 dependencies {
   implementation("org.apache.pdfbox:pdfbox:2.0.30")
+  implementation("com.google.code.gson:gson:2.10.1")
 
   intellijPlatform {
     intellijIdeaCommunity("2024.2", useInstaller = false)
