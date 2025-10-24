@@ -48,13 +48,13 @@ class MissingCitationsWatcher : StartupActivity.DumbAware {
   private fun resolveKey(project: Project, key: String) {
     val id = Messages.showInputDialog(
       project,
-      "Enter DOI or doi.org URL for '$key' (leave blank to create stub):",
+      "Enter DOI, URL, or title for '$key' (leave blank to create stub):",
       "Resolve Citation",
       null
     )
     val svc = project.getService(BibLibraryService::class.java)
     if (!id.isNullOrBlank()) {
-      val imported = svc.importFromDoiOrUrl(id.trim(), preferredKey = key)
+      val imported = svc.importFromAny(id.trim(), preferredKey = key)
       if (imported != null) return
       Messages.showErrorDialog(project, "Import failed for '$key'. Creating stub.", "Bibliography")
     }

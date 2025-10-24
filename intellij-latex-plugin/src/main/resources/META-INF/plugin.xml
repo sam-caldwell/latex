@@ -34,6 +34,16 @@
                 anchor="right"
                 factoryClass="com.samcaldwell.latex.BibliographyToolWindowFactory"
                 icon="/icons/bib.svg"/>
+
+    <applicationService serviceImplementation="com.samcaldwell.latex.LatexSecretsService"/>
+
+    <applicationConfigurable id="com.samcaldwell.latex.Secrets"
+                             displayName="LaTeX Tools (Secrets)"
+                             instance="com.samcaldwell.latex.LatexSecretsConfigurable"/>
+
+    <applicationConfigurable id="com.samcaldwell.latex.Dependencies"
+                             displayName="LaTeX Tools (Dependencies)"
+                             instance="com.samcaldwell.latex.DependenciesConfigurable"/>
   </extensions>
 
   <actions>

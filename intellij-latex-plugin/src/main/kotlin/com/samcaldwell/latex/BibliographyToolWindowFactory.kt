@@ -1,9 +1,14 @@
 package com.samcaldwell.latex
 
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.NlsContexts
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
@@ -11,17 +16,19 @@ import java.awt.BorderLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.nio.file.Paths
 import javax.swing.*
 
 class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
     val panel = BibliographyForm(project)
     val content = ContentFactory.getInstance().createContent(panel, "", false)
+    content.setDisposer(panel)
     toolWindow.contentManager.addContent(content)
   }
 }
 
-class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
+class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), Disposable {
   private val listModel = DefaultListModel<BibLibraryService.BibEntry>()
   private val entryList = JList(listModel).apply {
     selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -95,13 +102,17 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
     saveButton.addActionListener { saveEntry() }
     val openButton = JButton("Open library.bib")
     openButton.addActionListener { openLibrary() }
-    val importButton = JButton("Import DOI/URL → BibTeX")
+    val importButton = JButton("Import DOI/URL/Title → BibTeX")
     importButton.addActionListener { importByDoiOrUrl() }
+    val aiLookupButton = JButton("Lookup (AI)")
+    aiLookupButton.toolTipText = "Use JetBrains AI Assistant if installed"
+    aiLookupButton.addActionListener { importViaAi() }
     buttonPanel.add(saveButton)
     buttonPanel.add(openButton)
     buttonPanel.add(JLabel(" DOI/URL:"))
     buttonPanel.add(importField.apply { columns = 18 })
     buttonPanel.add(importButton)
+    buttonPanel.add(aiLookupButton)
 
     val rightPanel = JPanel(BorderLayout())
     rightPanel.add(JScrollPane(form), BorderLayout.CENTER)
@@ -110,9 +121,17 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
     val leftPanel = JPanel(BorderLayout())
     val refresh = JButton("Refresh")
     refresh.addActionListener { refreshList() }
+    val duplicateBtn = JButton("Duplicate")
+    duplicateBtn.addActionListener { duplicateSelected() }
+    val deleteBtn = JButton("Delete")
+    deleteBtn.addActionListener { deleteSelected() }
     val leftTop = JPanel(BorderLayout())
     leftTop.add(JLabel("Sources in library.bib"), BorderLayout.WEST)
-    leftTop.add(refresh, BorderLayout.EAST)
+    val leftButtons = JPanel()
+    leftButtons.add(refresh)
+    leftButtons.add(duplicateBtn)
+    leftButtons.add(deleteBtn)
+    leftTop.add(leftButtons, BorderLayout.EAST)
     leftPanel.add(leftTop, BorderLayout.NORTH)
     leftPanel.add(JScrollPane(entryList), BorderLayout.CENTER)
 
@@ -123,6 +142,9 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
 
     // Initial load
     refreshList()
+
+    // Watch for external changes to library.bib and auto-refresh the list
+    installVfsWatcher()
   }
 
   private fun saveEntry() {
@@ -170,12 +192,12 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
   private fun importByDoiOrUrl() {
     val id = importField.text.trim()
     if (id.isEmpty()) {
-      Messages.showErrorDialog(project, "Enter a DOI or doi.org URL.", "Bibliography")
+      Messages.showErrorDialog(project, "Enter a DOI, URL, or title.", "Bibliography")
       return
     }
     val preferredKey = keyField.text.trim().ifEmpty { null }
     val svc = project.getService(BibLibraryService::class.java)
-    val entry = svc.importFromDoiOrUrl(id, preferredKey)
+    val entry = svc.importFromAny(id, preferredKey)
     if (entry != null) {
       Messages.showInfoMessage(project, "Imported ${entry.key}", "Bibliography")
       refreshList(selectKey = entry.key)
@@ -183,6 +205,38 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
     } else {
       Messages.showErrorDialog(project, "Import failed. Ensure it's a valid DOI or doi.org URL.", "Bibliography")
     }
+  }
+
+  private fun importViaAi() {
+    val id = importField.text.trim()
+    if (id.isEmpty()) {
+      Messages.showErrorDialog(project, "Enter an ISBN, DOI, or URL to lookup.", "Bibliography")
+      return
+    }
+    // Always try deterministic sources first, AI as last resort
+    val svc = project.getService(BibLibraryService::class.java)
+    val preferredKey = keyField.text.trim().ifEmpty { null }
+    val resolved = svc.importFromAny(id, preferredKey)
+    if (resolved != null) {
+      Messages.showInfoMessage(project, "Imported ${resolved.key}", "Bibliography")
+      refreshList(selectKey = resolved.key)
+      loadEntryIntoForm(resolved)
+      return
+    }
+    if (AiBibliographyLookup.isAiAvailable()) {
+      val entry = AiBibliographyLookup.lookup(project, id)
+      if (entry != null) {
+        val key = preferredKey ?: entry.key
+        val saved = svc.upsertEntry(entry.copy(key = key))
+        if (saved) {
+          Messages.showInfoMessage(project, "Imported ${key}", "Bibliography")
+          refreshList(selectKey = key)
+          loadEntryIntoForm(entry.copy(key = key))
+          return
+        }
+      }
+    }
+    Messages.showErrorDialog(project, "Lookup failed across sources (OpenLibrary, Google Books, Crossref, OCLC WorldCat, BNB, openBD, LOC) and AI.", "Bibliography")
   }
 
   private fun refreshList(selectKey: String? = null) {
@@ -208,6 +262,73 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()) {
     publisherField.text = e.fields["publisher"] ?: ""
     doiField.text = e.fields["doi"] ?: ""
     urlField.text = e.fields["url"] ?: ""
+  }
+
+  private fun duplicateSelected() {
+    val selected = entryList.selectedValue ?: run {
+      Messages.showErrorDialog(project, "Select an entry to duplicate.", "Bibliography")
+      return
+    }
+    val svc = project.getService(BibLibraryService::class.java)
+    val defaultKey = svc.suggestDuplicateKey(selected.key)
+    val newKey = Messages.showInputDialog(project, "New key for duplicate:", "Duplicate Entry", null, defaultKey, null)
+    if (newKey.isNullOrBlank()) return
+    val ok = svc.upsertEntry(selected.copy(key = newKey.trim()))
+    if (ok) {
+      refreshList(selectKey = newKey.trim())
+    } else {
+      Messages.showErrorDialog(project, "Failed to duplicate entry.", "Bibliography")
+    }
+  }
+
+  private fun deleteSelected() {
+    val selected = entryList.selectedValue ?: run {
+      Messages.showErrorDialog(project, "Select an entry to delete.", "Bibliography")
+      return
+    }
+    val confirm = Messages.showYesNoDialog(
+      project,
+      "Delete '${selected.key}' (${selected.type}) from library.bib?",
+      "Delete Entry",
+      "Delete",
+      "Cancel",
+      null
+    )
+    if (confirm != Messages.YES) return
+    val svc = project.getService(BibLibraryService::class.java)
+    val ok = svc.deleteEntry(selected.type, selected.key)
+    if (ok) {
+      refreshList()
+    } else {
+      Messages.showErrorDialog(project, "Failed to delete entry.", "Bibliography")
+    }
+  }
+
+  private fun installVfsWatcher() {
+    val svc = project.getService(BibLibraryService::class.java)
+    val target = svc.libraryPath() ?: return
+    val targetPath = target.toAbsolutePath().normalize().toString()
+    val conn = project.messageBus.connect(this)
+    conn.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
+      override fun after(events: MutableList<out VFileEvent>) {
+        val hit = events.any { e ->
+          val p = (e.file?.path ?: e.path) ?: return@any false
+          pathsEqual(p, targetPath)
+        }
+        if (hit) {
+          ApplicationManager.getApplication().invokeLater { refreshList() }
+        }
+      }
+    })
+  }
+
+  private fun pathsEqual(a: String, b: String): Boolean {
+    val os = System.getProperty("os.name").lowercase()
+    return if (os.contains("win")) a.equals(b, ignoreCase = true) else a == b
+  }
+
+  override fun dispose() {
+    // messageBus connection is tied to this as a parent disposable; nothing else to do
   }
 }
 

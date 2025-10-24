@@ -16,7 +16,7 @@ dependencies {
   implementation("org.apache.pdfbox:pdfbox:2.0.30")
 
   intellijPlatform {
-    intellijIdeaCommunity("2024.2")
+    intellijIdeaCommunity("2024.2", useInstaller = false)
     bundledPlugin("com.intellij.java")
   }
 }

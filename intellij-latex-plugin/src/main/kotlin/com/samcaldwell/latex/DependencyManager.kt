@@ -25,7 +25,11 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
   data class State(
     var consented: Boolean = false,
     var autoInstallEnabled: Boolean = true,
-    var lastCheckMs: Long = 0L
+    var lastCheckMs: Long = 0L,
+    var installLatexmk: Boolean = true,
+    var installBiber: Boolean = true,
+    var preferFullTexDist: Boolean = true,
+    var linuxPathUpdate: Boolean = true
   )
 
   private var state = State()
@@ -74,8 +78,8 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
 
   fun missingTools(): List<String> {
     val need = mutableListOf<String>()
-    if (!isOnPath("latexmk") && !isOnPath("pdflatex")) need.add("LaTeX (latexmk/pdflatex)")
-    if (!isOnPath("biber")) need.add("biber")
+    if (state.installLatexmk && !isOnPath("latexmk") && !isOnPath("pdflatex")) need.add("latexmk/pdflatex")
+    if (state.installBiber && !isOnPath("biber")) need.add("biber")
     return need
   }
 
@@ -103,11 +107,14 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
     // Prefer Homebrew; try minimal set if full MacTeX is not desired
     val brew = if (isOnPath("brew")) "brew" else return false
     var ok = true
-    // Try cask first for comprehensive install
-    ok = ok && runCmd(GeneralCommandLine(brew, "install", "--cask", "mactex-no-gui"), 3600)
-    // Ensure latexmk and biber are available (in case cask path not linked yet)
-    if (!isOnPath("latexmk")) ok = ok && runCmd(GeneralCommandLine(brew, "install", "latexmk"))
-    if (!isOnPath("biber")) ok = ok && runCmd(GeneralCommandLine(brew, "install", "biber"))
+    if (state.preferFullTexDist) {
+      ok = ok && runCmd(GeneralCommandLine(brew, "install", "--cask", "mactex-no-gui"), 3600)
+    } else {
+      // BasicTeX is smaller; add tools as needed
+      ok = ok && runCmd(GeneralCommandLine(brew, "install", "--cask", "basictex"), 3600)
+    }
+    if (state.installLatexmk && !isOnPath("latexmk")) ok = ok && runCmd(GeneralCommandLine(brew, "install", "latexmk"))
+    if (state.installBiber && !isOnPath("biber")) ok = ok && runCmd(GeneralCommandLine(brew, "install", "biber"))
     return ok
   }
 
@@ -133,13 +140,72 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
     // If we don't have sudo/apt/etc. available, return false and let user run manually
     val cmds = mutableListOf<List<String>>()
     when {
-      isOnPath("apt-get") -> cmds += listOf(listOf("sudo", "apt-get", "update"), listOf("sudo", "apt-get", "install", "-y", "texlive-full", "biber", "latexmk"))
-      isOnPath("dnf") -> cmds += listOf(listOf("sudo", "dnf", "install", "-y", "texlive", "texlive-biblatex", "biber", "latexmk"))
-      isOnPath("pacman") -> cmds += listOf(listOf("sudo", "pacman", "-Sy", "texlive-most", "biber", "latexmk"))
+      isOnPath("apt-get") -> {
+        val base = if (state.preferFullTexDist) listOf("texlive-full") else listOf("texlive-latex-recommended", "texlive-latex-extra")
+        val extras = mutableListOf<String>()
+        if (state.installBiber) extras += "biber"
+        if (state.installLatexmk) extras += "latexmk"
+        cmds += listOf(listOf("sudo", "apt-get", "update"), listOf("sudo", "apt-get", "install", "-y") + base + extras)
+      }
+      isOnPath("dnf") -> {
+        val base = if (state.preferFullTexDist) listOf("texlive") else listOf("texlive-latex", "texlive-collection-latexrecommended")
+        val extras = mutableListOf<String>()
+        if (state.installBiber) extras += "biber"
+        if (state.installLatexmk) extras += "latexmk"
+        cmds += listOf(listOf("sudo", "dnf", "install", "-y") + base + extras)
+      }
+      isOnPath("pacman") -> {
+        val base = if (state.preferFullTexDist) listOf("texlive-most") else listOf("texlive-basic", "texlive-latexextra")
+        val extras = mutableListOf<String>()
+        if (state.installBiber) extras += "biber"
+        if (state.installLatexmk) extras += "latexmk"
+        cmds += listOf(listOf("sudo", "pacman", "-Sy") + base + extras)
+      }
     }
     var ok = true
     for (c in cmds) ok = ok && runCmd(GeneralCommandLine(c))
+    if (ok && state.linuxPathUpdate) maybeUpdateLinuxPath()
     return ok
+  }
+
+  private fun maybeUpdateLinuxPath() {
+    if (isOnPath("latexmk") || isOnPath("pdflatex")) return
+    val candidates = mutableListOf<String>()
+    val tlDirs = listOf("/usr/local/texlive", "/opt/texlive")
+    tlDirs.forEach { base ->
+      val f = java.io.File(base)
+      if (f.isDirectory) {
+        f.listFiles()?.sortedByDescending { it.name }?.forEach { yearDir ->
+          val bin = java.io.File(yearDir, "bin")
+          bin.listFiles()?.forEach { arch ->
+            val path = java.io.File(arch, "").absolutePath
+            if (java.io.File(arch, "latexmk").exists() || java.io.File(arch, "pdflatex").exists()) {
+              candidates += path
+            }
+          }
+        }
+      }
+    }
+    if (candidates.isEmpty()) return
+    val target = candidates.first()
+    val answer = Messages.showYesNoDialog(
+      null,
+      "TeX binaries may not be on your PATH.\nAdd to ~/.bashrc and ~/.zshrc?\n\nexport PATH=\"$target:\$PATH\"",
+      "Update Shell PATH",
+      "Add",
+      "Skip",
+      null
+    )
+    if (answer != Messages.YES) return
+    appendLineToProfile(java.io.File(System.getProperty("user.home"), ".bashrc"), target)
+    appendLineToProfile(java.io.File(System.getProperty("user.home"), ".zshrc"), target)
+  }
+
+  private fun appendLineToProfile(file: java.io.File, dir: String) {
+    try {
+      val line = "\n# Added by LaTeX Tools plugin\nexport PATH=\"$dir:\$PATH\"\n"
+      file.appendText(line)
+    } catch (_: Throwable) {}
   }
 
   private fun isOnPath(name: String): Boolean {
