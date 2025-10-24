@@ -53,8 +53,12 @@ class BibliographyToolWindowLightIT : LightPlatformTestCase() {
     assertNotNull(refresh)
     refresh!!.doClick()
 
-    // Find the list and ensure it contains our entry
-    val list = component.componentsDepthFirst().filterIsInstance<javax.swing.JList<*>>().firstOrNull()
+    // Find the bibliography entry list (not the authors list)
+    val list = component.componentsDepthFirst()
+      .filterIsInstance<javax.swing.JList<*>>()
+      .firstOrNull { jl ->
+        (0 until jl.model.size).any { idx -> jl.model.getElementAt(idx) is BibLibraryService.BibEntry }
+      }
     assertNotNull(list)
     list!!
     val hasKey = (0 until list.model.size).any { idx ->
@@ -73,4 +77,3 @@ private fun java.awt.Component.componentsDepthFirst(): Sequence<java.awt.Compone
     }
   }
 }
-

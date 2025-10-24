@@ -102,6 +102,9 @@ class BibLibraryService(private val project: Project) {
         val matchText = matcher.group()
         val existingCreated = extractFieldValue(matchText, "created")
         val fields = entry.fields.toMutableMap()
+        // Ensure year default when absent
+        val yr = fields["year"]?.trim()
+        if (yr.isNullOrEmpty()) fields["year"] = "n.d."
         fields["modified"] = now
         if (!existingCreated.isNullOrBlank()) {
           fields["created"] = existingCreated
@@ -114,6 +117,9 @@ class BibLibraryService(private val project: Project) {
       } else {
         // New entry: set created and modified to now (override if present)
         val fields = entry.fields.toMutableMap()
+        // Ensure year default when absent
+        val yr = fields["year"]?.trim()
+        if (yr.isNullOrEmpty()) fields["year"] = "n.d."
         fields["created"] = now
         fields["modified"] = now
         val body = buildFieldsBody(fields)

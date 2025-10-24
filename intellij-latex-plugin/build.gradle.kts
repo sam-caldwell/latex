@@ -4,6 +4,7 @@ plugins {
   id("org.jetbrains.intellij.platform") version "2.10.2"
   kotlin("jvm") version "2.2.21"
   jacoco
+  `maven-publish`
 }
 
 repositories {
@@ -12,7 +13,18 @@ repositories {
 }
 
 group = "com.samcaldwell.latex"
-version = "0.1.0"
+// Default version for local builds; CI uses tag-derived version if available
+var computedVersion = "0.1.1"
+val refName = System.getenv("GITHUB_REF_NAME") ?: System.getenv("GITHUB_REF")?.substringAfterLast('/')
+if (refName != null && refName.startsWith("v")) {
+  val tagVer = refName.removePrefix("v")
+  // Allow SemVer with optional pre-release suffix
+  val semver = Regex("^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9]+)?$")
+  if (semver.matches(tagVer)) {
+    computedVersion = tagVer
+  }
+}
+version = computedVersion
 
 // IntelliJ Platform & bundled plugin dependencies (2.x DSL)
 dependencies {
@@ -165,6 +177,36 @@ tasks {
     val agent = project.layout.projectDirectory.file(".intellijPlatform/coroutines-javaagent-legacy.jar").asFile
     if (agent.exists()) {
       jvmArgs("-javaagent:${agent.absolutePath}")
+    }
+  }
+}
+
+publishing {
+  publications {
+    create<MavenPublication>("pluginZip") {
+      groupId = project.group.toString()
+      artifactId = "intellij-latex-plugin"
+      version = project.version.toString()
+
+      artifact(layout.buildDirectory.file("distributions/${'$'}{project.name}-${'$'}{project.version}.zip")) {
+        extension = "zip"
+        builtBy(tasks.named("buildPlugin"))
+      }
+      pom {
+        name.set("intellij-latex-plugin")
+        description.set("LaTeX Tools + Preview IntelliJ plugin distribution")
+      }
+    }
+  }
+  repositories {
+    maven {
+      name = "GitHubPackages"
+      val repo = providers.gradleProperty("github.repo").orElse(System.getenv("GITHUB_REPOSITORY") ?: "OWNER/REPO").get()
+      url = uri("https://maven.pkg.github.com/${'$'}repo")
+      credentials {
+        username = providers.environmentVariable("GITHUB_ACTOR").orElse(System.getenv("GITHUB_ACTOR") ?: "").get()
+        password = providers.environmentVariable("GITHUB_TOKEN").orElse(System.getenv("GITHUB_TOKEN") ?: "").get()
+      }
     }
   }
 }
