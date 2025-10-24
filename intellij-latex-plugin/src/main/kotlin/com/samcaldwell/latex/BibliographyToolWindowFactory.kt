@@ -65,6 +65,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
   private val publisherField = JTextField()
   private val doiField = JTextField()
   private val urlField = JTextField()
+  private val verifiedCheck = JCheckBox()
   private val importField = JTextField()
 
   init {
@@ -96,6 +97,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     addRow("Publisher", publisherField)
     addRow("DOI", doiField)
     addRow("URL", urlField)
+    addRow("Verified", verifiedCheck)
 
     val buttonPanel = JPanel()
     val saveButton = JButton("Save Entry")
@@ -164,6 +166,8 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     putIfNotEmpty("publisher", publisherField)
     putIfNotEmpty("doi", doiField)
     putIfNotEmpty("url", urlField)
+    fields["source"] = "manual entry"
+    fields["verified"] = if (verifiedCheck.isSelected) "true" else "false"
 
     val ok = project.getService(BibLibraryService::class.java).upsertEntry(
       BibLibraryService.BibEntry(type, key, fields)
@@ -228,11 +232,12 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
       val entry = AiBibliographyLookup.lookup(project, id)
       if (entry != null) {
         val key = preferredKey ?: entry.key
-        val saved = svc.upsertEntry(entry.copy(key = key))
+        val augmented = entry.copy(key = key, fields = entry.fields + mapOf("source" to "automated (JetBrains AI)", "verified" to "false"))
+        val saved = svc.upsertEntry(augmented)
         if (saved) {
           Messages.showInfoMessage(project, "Imported ${key}", "Bibliography")
           refreshList(selectKey = key)
-          loadEntryIntoForm(entry.copy(key = key))
+          loadEntryIntoForm(augmented)
           return
         }
       }
@@ -263,6 +268,7 @@ class BibliographyForm(private val project: Project) : JPanel(BorderLayout()), D
     publisherField.text = e.fields["publisher"] ?: ""
     doiField.text = e.fields["doi"] ?: ""
     urlField.text = e.fields["url"] ?: ""
+    verifiedCheck.isSelected = (e.fields["verified"] ?: "false").equals("true", ignoreCase = true)
   }
 
   private fun duplicateSelected() {

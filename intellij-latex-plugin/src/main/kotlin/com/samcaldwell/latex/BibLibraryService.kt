@@ -92,15 +92,32 @@ class BibLibraryService(private val project: Project) {
       val original = Files.readString(path)
       val normalizedType = entry.type.trim().lowercase()
       val key = entry.key.trim()
-      val body = buildFieldsBody(entry.fields)
-      val newEntryText = "@${normalizedType}{${key},\n${body}\n}\n\n"
 
       // Regex to find existing entry by type+key, across lines
       val pattern = Pattern.compile("@${Pattern.quote(normalizedType)}\\s*\\{\\s*${Pattern.quote(key)}\\s*,[\\s\\S]*?\\}\n?", Pattern.MULTILINE)
       val matcher = pattern.matcher(original)
+      val now = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
       val updated = if (matcher.find()) {
+        // Update existing: preserve created if present; always update modified
+        val matchText = matcher.group()
+        val existingCreated = extractFieldValue(matchText, "created")
+        val fields = entry.fields.toMutableMap()
+        fields["modified"] = now
+        if (!existingCreated.isNullOrBlank()) {
+          fields["created"] = existingCreated
+        } else {
+          fields.putIfAbsent("created", now)
+        }
+        val body = buildFieldsBody(fields)
+        val newEntryText = "@${normalizedType}{${key},\n${body}\n}\n\n"
         matcher.replaceFirst(newEntryText)
       } else {
+        // New entry: set created and modified to now (override if present)
+        val fields = entry.fields.toMutableMap()
+        fields["created"] = now
+        fields["modified"] = now
+        val body = buildFieldsBody(fields)
+        val newEntryText = "@${normalizedType}{${key},\n${body}\n}\n\n"
         if (original.endsWith("\n")) original + newEntryText else (original + "\n" + newEntryText)
       }
 
@@ -115,9 +132,20 @@ class BibLibraryService(private val project: Project) {
     }
   }
 
+  private fun extractFieldValue(entryText: String, fieldName: String): String? {
+    return try {
+      val p = Pattern.compile("(?i)${Pattern.quote(fieldName)}\\s*=\\s*(\\{([^}]*)\\}|\"([^\"]*)\")")
+      val m = p.matcher(entryText)
+      if (m.find()) m.group(2) ?: m.group(3) else null
+    } catch (_: Throwable) { null }
+  }
+
   private fun buildFieldsBody(fields: Map<String, String>): String {
     // Order a few common fields first, then the rest alphabetically
-    val priority = listOf("author", "title", "year", "journal", "booktitle", "publisher", "doi", "url")
+    val priority = listOf(
+      "author", "title", "year", "journal", "booktitle", "publisher", "doi", "url",
+      "source", "verified", "created", "modified"
+    )
     val orderedKeys = LinkedHashSet<String>()
     orderedKeys.addAll(priority.filter { fields.containsKey(it) })
     orderedKeys.addAll(fields.keys.sorted())
@@ -135,7 +163,9 @@ class BibLibraryService(private val project: Project) {
     val doi = extractDoi(identifier.trim()) ?: return null
     val bibtex = fetchBibtexForDoi(doi) ?: return null
     val parsed = parseSingleEntry(bibtex) ?: return null
-    val entry = if (!preferredKey.isNullOrBlank()) parsed.copy(key = preferredKey) else parsed
+    // ensure source field reflects doi.org
+    val withSource = parsed.copy(fields = parsed.fields + mapOf("source" to "automated (doi.org)", "verified" to "false"))
+    val entry = if (!preferredKey.isNullOrBlank()) withSource.copy(key = preferredKey) else withSource
     if (upsertEntry(entry)) return entry
     return null
   }
@@ -225,8 +255,11 @@ class BibLibraryService(private val project: Project) {
     val q = java.net.URLEncoder.encode(title, "UTF-8")
     val json = HttpUtil.get("https://api.crossref.org/works?rows=1&query.bibliographic=$q", accept = "application/json", aliases = arrayOf("crossref", "api.crossref.org"))
       ?: return null
-    val m = Pattern.compile("\\\"DOI\\\"\\s*:\\s*\\\"(10\\.[^\\\"]+)\\\"", Pattern.CASE_INSENSITIVE).matcher(json)
-    return if (m.find()) m.group(1) else null
+    return try {
+      val root = JsonParser.parseString(json).asJsonObject
+      val items = root.getAsJsonObject("message")?.getAsJsonArray("items")
+      if (items == null || items.size() == 0) null else items[0].asJsonObject.get("DOI")?.asString
+    } catch (_: Throwable) { null }
   }
 
   private fun fetchBibtexForDoi(doi: String): String? =
@@ -259,7 +292,7 @@ class BibLibraryService(private val project: Project) {
         if (!year.isNullOrBlank()) fields["year"] = year
         fields["url"] = url
         val type = if (text.contains("Proceedings", true) || text.contains("conference", true)) "inproceedings" else "article"
-        val entry = makeBibEntry(type, fields)
+        val entry = makeBibEntry(type, fields, sourceTag = "pdf")
         return withPreferredKey(entry, preferredKey)
       }
     } catch (_: Throwable) { null }
@@ -356,14 +389,18 @@ class BibLibraryService(private val project: Project) {
     return listOf(alast, y, t).filter { it.isNotBlank() }.joinToString("")
   }
 
-  private fun makeBibEntry(defaultType: String, fields: Map<String, String>, keyHint: String? = null): BibEntry {
+  private fun makeBibEntry(defaultType: String, fields: Map<String, String>, keyHint: String? = null, sourceTag: String? = null): BibEntry {
     val type = fields["entrytype"] ?: defaultType
     val author = fields["author"]
     val title = fields["title"]
     val year = fields["year"]
     val base = keyHint ?: canonicalizeKeyBase(author, title, year)
     val key = suggestDuplicateKey(base.ifBlank { "ref" })
-    val finalFields = fields.toMutableMap().apply { remove("entrytype") }
+    val finalFields = fields.toMutableMap().apply {
+      remove("entrytype")
+      if (!sourceTag.isNullOrBlank()) this["source"] = "automated ($sourceTag)"
+      if (!this.containsKey("verified")) this["verified"] = "false"
+    }
     return BibEntry(type, key, finalFields)
   }
 
@@ -402,7 +439,7 @@ class BibLibraryService(private val project: Project) {
     if (publishers.isNotEmpty()) f["publisher"] = publishers.first()
     f["isbn"] = isbn
     node.get("url")?.asString?.let { f["url"] = it }
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "openlibrary.org")
   }
 
   private fun tryOpenLibraryByTitle(title: String): BibEntry? {
@@ -424,7 +461,7 @@ class BibLibraryService(private val project: Project) {
     f["title"] = titleFound
     safeYearFrom(year)?.let { f["year"] = it }
     if (!isbn.isNullOrBlank()) f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "openlibrary.org")
   }
 
   private fun tryGoogleBooksByIsbn(isbn: String): BibEntry? {
@@ -445,7 +482,7 @@ class BibLibraryService(private val project: Project) {
     year?.let { f["year"] = it }
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
     f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "books.googleapis.com")
   }
 
   private fun tryGoogleBooksByTitle(title: String): BibEntry? {
@@ -466,7 +503,7 @@ class BibLibraryService(private val project: Project) {
     f["title"] = titleFound
     year?.let { f["year"] = it }
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "books.googleapis.com")
   }
 
   private fun tryCrossrefByIsbn(isbn: String): BibEntry? {
@@ -494,7 +531,7 @@ class BibLibraryService(private val project: Project) {
       year?.let { f["year"] = it }
       f["isbn"] = isbn
       if (!doi.isNullOrBlank()) f["doi"] = doi
-      return makeBibEntry("book", f)
+      return makeBibEntry("book", f, sourceTag = "api.crossref.org")
     }
     return null
   }
@@ -503,7 +540,7 @@ class BibLibraryService(private val project: Project) {
     val url = "https://classify.oclc.org/classify2/Classify?isbn=$isbn&summary=true"
     val xml = HttpUtil.get(url, accept = "application/xml", aliases = arrayOf("oclc", "worldcat", "classify.oclc.org")) ?: return null
     val parsed = parseWorldCatXml(xml) ?: return null
-    val title = parsed["title"]
+    val title = parsed["title"] ?: return null
     val author = parsed["author"]
     val year = parsed["year"]
     val f = linkedMapOf<String, String>()
@@ -511,7 +548,7 @@ class BibLibraryService(private val project: Project) {
     f["title"] = title
     if (!year.isNullOrBlank()) f["year"] = year
     f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "classify.oclc.org")
   }
 
   private fun tryWorldCatByTitle(title: String): BibEntry? {
@@ -523,7 +560,7 @@ class BibLibraryService(private val project: Project) {
     if (!author.isNullOrBlank()) f["author"] = author
     f["title"] = m["title"] ?: return null
     m["year"]?.let { f["year"] = it }
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "classify.oclc.org")
   }
 
   private fun tryBnbByIsbn(isbn: String): BibEntry? {
@@ -550,7 +587,7 @@ class BibLibraryService(private val project: Project) {
     f["title"] = title
     safeYearFrom(date)?.let { f["year"] = it }
     f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "bnb.data.bl.uk")
   }
 
   private fun tryBnbByTitle(title: String): BibEntry? {
@@ -577,7 +614,7 @@ class BibLibraryService(private val project: Project) {
     if (!creator.isNullOrBlank()) f["author"] = creator
     f["title"] = titleFound
     safeYearFrom(date)?.let { f["year"] = it }
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "bnb.data.bl.uk")
   }
 
   private fun tryOpenBdByIsbn(isbn: String): BibEntry? {
@@ -597,7 +634,7 @@ class BibLibraryService(private val project: Project) {
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
     if (!year.isNullOrBlank()) f["year"] = year
     f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "api.openbd.jp")
   }
 
   private fun tryLocByIsbn(isbn: String): BibEntry? {
@@ -616,7 +653,7 @@ class BibLibraryService(private val project: Project) {
     safeYearFrom(date)?.let { f["year"] = it }
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
     f["isbn"] = isbn
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "loc.gov")
   }
 
   private fun tryLocByTitle(title: String): BibEntry? {
@@ -635,7 +672,7 @@ class BibLibraryService(private val project: Project) {
     f["title"] = titleFound
     safeYearFrom(date)?.let { f["year"] = it }
     if (!publisher.isNullOrBlank()) f["publisher"] = publisher
-    return makeBibEntry("book", f)
+    return makeBibEntry("book", f, sourceTag = "loc.gov")
   }
 
   private fun parseWorldCatXml(xml: String): Map<String, String>? {

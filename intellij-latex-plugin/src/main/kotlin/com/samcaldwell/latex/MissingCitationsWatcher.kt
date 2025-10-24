@@ -58,8 +58,17 @@ class MissingCitationsWatcher : StartupActivity.DumbAware {
       if (imported != null) return
       Messages.showErrorDialog(project, "Import failed for '$key'. Creating stub.", "Bibliography")
     }
-    // Create stub misc entry
-    svc.upsertEntry(BibLibraryService.BibEntry("misc", key, emptyMap()))
+    // Create stub misc entry with source noted
+    svc.upsertEntry(
+      BibLibraryService.BibEntry(
+        "misc",
+        key,
+        mapOf(
+          "source" to "automated (plugin stub)",
+          "verified" to "false"
+        )
+      )
+    )
   }
 
   private fun findCiteKeys(text: String): Set<String> {
