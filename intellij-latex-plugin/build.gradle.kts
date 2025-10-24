@@ -2,7 +2,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   id("org.jetbrains.intellij.platform") version "2.10.2"
-  kotlin("jvm") version "1.9.23"
+  kotlin("jvm") version "2.2.21"
   jacoco
 }
 
@@ -16,8 +16,8 @@ version = "0.1.0"
 
 // IntelliJ Platform & bundled plugin dependencies (2.x DSL)
 dependencies {
-  implementation("org.apache.pdfbox:pdfbox:2.0.30")
-  implementation("com.google.code.gson:gson:2.10.1")
+  implementation("org.apache.pdfbox:pdfbox:3.0.6")
+  implementation("com.google.code.gson:gson:2.13.2")
 
   testImplementation(kotlin("test"))
   testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
