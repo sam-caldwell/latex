@@ -102,7 +102,7 @@ tasks {
       "**/*"
     )
     val includePatterns = listOf(
-      "com/samcaldwell/latex/**"
+      "net/samcaldwell/latex/**"
     )
 
     val classDirs = files(sourceSets["main"].output.classesDirs)
@@ -136,7 +136,7 @@ tasks {
       // Ensure BibLibraryService specifically also meets the threshold
       rule {
         element = "CLASS"
-        includes = listOf("com.samcaldwell.latex.BibLibraryService")
+        includes = listOf("net.samcaldwell.latex.BibLibraryService")
         limit {
           counter = "INSTRUCTION"
           value = "COVEREDRATIO"
@@ -145,7 +145,7 @@ tasks {
       }
     }
     val excludePatterns = listOf("**/*")
-    val includePatterns = listOf("com/samcaldwell/latex/**")
+    val includePatterns = listOf("net/samcaldwell/latex/**")
     val classDirs = files(sourceSets["main"].output.classesDirs)
     classDirectories.setFrom(
       classDirs.asFileTree.matching {

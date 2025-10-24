@@ -19,63 +19,63 @@
   <depends>com.intellij.modules.platform</depends>
 
   <extensions defaultExtensionNs="com.intellij">
-    <fileType name="LaTeX" language="LaTeX" extensions="tex" implementationClass="com.samcaldwell.latex.TexFileType"/>
-    <fileType name="BibTeX" language="BibTeX" extensions="bib" implementationClass="com.samcaldwell.latex.BibFileType"/>
+    <fileType name="LaTeX" language="LaTeX" extensions="tex" implementationClass="net.samcaldwell.latex.TexFileType"/>
+    <fileType name="BibTeX" language="BibTeX" extensions="bib" implementationClass="net.samcaldwell.latex.BibFileType"/>
 
-    <fileEditorProvider implementation="com.samcaldwell.latex.TexFileEditorProvider"/>
+    <fileEditorProvider implementation="net.samcaldwell.latex.TexFileEditorProvider"/>
 
-    <completion.contributor language="LaTeX" implementationClass="com.samcaldwell.latex.CitationCompletionContributor"/>
+    <completion.contributor language="LaTeX" implementationClass="net.samcaldwell.latex.CitationCompletionContributor"/>
 
-    <fileTemplateGroup implementation="com.samcaldwell.latex.TexFileTemplates"/>
+    <fileTemplateGroup implementation="net.samcaldwell.latex.TexFileTemplates"/>
 
-    <projectService serviceImplementation="com.samcaldwell.latex.LatexCompilerService"/>
-    <projectService serviceImplementation="com.samcaldwell.latex.BibLibraryService"/>
+    <projectService serviceImplementation="net.samcaldwell.latex.LatexCompilerService"/>
+    <projectService serviceImplementation="net.samcaldwell.latex.BibLibraryService"/>
 
-    <postStartupActivity implementation="com.samcaldwell.latex.CreateBibOnStartup"/>
-    <postStartupActivity implementation="com.samcaldwell.latex.MissingCitationsWatcher"/>
-    <postStartupActivity implementation="com.samcaldwell.latex.DependencyStartupActivity"/>
+    <postStartupActivity implementation="net.samcaldwell.latex.CreateBibOnStartup"/>
+    <postStartupActivity implementation="net.samcaldwell.latex.MissingCitationsWatcher"/>
+    <postStartupActivity implementation="net.samcaldwell.latex.DependencyStartupActivity"/>
 
     <!-- Inject LaTeX language into Markdown ```latex code fences -->
-    <multiHostInjector implementation="com.samcaldwell.latex.MarkdownLatexFenceInjector"/>
+    <multiHostInjector implementation="net.samcaldwell.latex.MarkdownLatexFenceInjector"/>
 
     <toolWindow id="Bibliography"
                 anchor="right"
-                factoryClass="com.samcaldwell.latex.BibliographyToolWindowFactory"
+                factoryClass="net.samcaldwell.latex.BibliographyToolWindowFactory"
                 icon="/icons/bib.svg"/>
 
-    <applicationService serviceImplementation="com.samcaldwell.latex.LatexSecretsService"/>
+    <applicationService serviceImplementation="net.samcaldwell.latex.LatexSecretsService"/>
 
-    <applicationConfigurable id="com.samcaldwell.latex.Secrets"
+    <applicationConfigurable id="net.samcaldwell.latex.Secrets"
                              displayName="LaTeX Tools (Secrets)"
-                             instance="com.samcaldwell.latex.LatexSecretsConfigurable"/>
+                             instance="net.samcaldwell.latex.LatexSecretsConfigurable"/>
 
-    <applicationConfigurable id="com.samcaldwell.latex.Dependencies"
+    <applicationConfigurable id="net.samcaldwell.latex.Dependencies"
                              displayName="LaTeX Tools (Dependencies)"
-                             instance="com.samcaldwell.latex.DependenciesConfigurable"/>
+                             instance="net.samcaldwell.latex.DependenciesConfigurable"/>
 
-    <applicationConfigurable id="com.samcaldwell.latex.LookupProviders"
+    <applicationConfigurable id="net.samcaldwell.latex.LookupProviders"
                              displayName="LaTeX Tools (Lookup Providers)"
-                             instance="com.samcaldwell.latex.LookupProvidersConfigurable"/>
+                             instance="net.samcaldwell.latex.LookupProvidersConfigurable"/>
   </extensions>
 
   <actions>
-    <action id="com.samcaldwell.latex.RenderLatexFenceAction"
-            class="com.samcaldwell.latex.RenderLatexFenceAction"
+    <action id="net.samcaldwell.latex.RenderLatexFenceAction"
+            class="net.samcaldwell.latex.RenderLatexFenceAction"
             text="Render LaTeX Code Fence"
             description="Compile and preview the current LaTeX code fence">
       <add-to-group group-id="EditorPopupMenu" anchor="last"/>
     </action>
 
-    <action id="com.samcaldwell.latex.BibliographySetupAction"
-            class="com.samcaldwell.latex.BibliographySetupAction"
+    <action id="net.samcaldwell.latex.BibliographySetupAction"
+            class="net.samcaldwell.latex.BibliographySetupAction"
             text="Insert Bibliography Setup"
             description="Insert biblatex setup and library.bib reference">
       <add-to-group group-id="EditorPopupMenu" anchor="last"/>
       <add-to-group group-id="ToolsMenu" anchor="last"/>
     </action>
 
-    <action id="com.samcaldwell.latex.InstallDependenciesAction"
-            class="com.samcaldwell.latex.InstallDependenciesAction"
+    <action id="net.samcaldwell.latex.InstallDependenciesAction"
+            class="net.samcaldwell.latex.InstallDependenciesAction"
             text="Install LaTeX Dependencies"
             description="Install required LaTeX tools (latexmk/pdflatex, biber) after consent">
       <add-to-group group-id="ToolsMenu" anchor="last"/>

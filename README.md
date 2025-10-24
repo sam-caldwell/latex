@@ -36,3 +36,6 @@ LaTeX Tools + Preview (IntelliJ Plugin)
 ## Repository Layout
 - `intellij-latex-plugin/` — IntelliJ plugin source, Gradle build, icons, templates.
 - `.gitignore` — ignores build artifacts and IDE-specific files.
+
+## Action IDs (Keymaps/Macros)
+See `docs/ActionIDs.md` for the current action IDs you can bind in Keymap or reference from macros.
