@@ -1,6 +1,7 @@
 package net.samcaldwell.latex
 
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -29,8 +30,19 @@ class BibLibraryService(private val project: Project) {
       project.getService(BibliographySettingsService::class.java)?.getLibraryPath()?.trim()
     } catch (_: Throwable) { null }
     if (!override.isNullOrEmpty()) return try { Paths.get(override) } catch (_: Throwable) { null }
-    val base = project.basePath ?: return null
-    return Paths.get(base).resolve("library.bib")
+
+    // In normal usage, default to $HOME/bibliography/library.bib.
+    // In headless/unit-test scenarios where Application is unavailable, avoid
+    // writing outside the workspace by falling back to project base or null.
+    val app = try { ApplicationManager.getApplication() } catch (_: Throwable) { null }
+    val isUnitTest = try { app?.isUnitTestMode == true } catch (_: Throwable) { false }
+    if (app == null || isUnitTest) {
+      val base = project.basePath ?: return null
+      return Paths.get(base).resolve("library.bib")
+    }
+
+    val home = System.getProperty("user.home") ?: return null
+    return Paths.get(home, "bibliography", "library.bib")
   }
 
   fun ensureLibraryExists(): Path? {

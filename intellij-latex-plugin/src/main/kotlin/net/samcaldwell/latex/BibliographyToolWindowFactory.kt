@@ -41,6 +41,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
     }
     val toolBar = JToolBar().apply {
       isFloatable = false
+      val toolBarRef = this
       val browseBtn = JButton(AllIcons.Actions.Preview).apply {
         toolTipText = "Open Bibliography Browser"
         addActionListener { BibliographyBrowserDialog(project).show() }
@@ -60,11 +61,96 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         val tag = if (underline) "u" else "span style='color:${color}'"
         return "<html>( <${tag} style='color:${color}'>" + name + "</${if (underline) "u" else "span"}> )</html>"
       }
+      fun shortenPathForLabel(full: String): String {
+        fun normalizeSlashes(s: String) = s.replace('\\', '/')
+        var s = normalizeSlashes(full)
+        // Replace home with ~
+        try {
+          val home = System.getProperty("user.home")
+          if (home != null) {
+            val homeNorm = normalizeSlashes(home)
+            if (s == homeNorm) s = "~" else if (s.startsWith(homeNorm + "/")) s = "~" + s.substring(homeNorm.length)
+          }
+        } catch (_: Throwable) { }
+
+        val fm = currentBibLabel.getFontMetrics(currentBibLabel.font)
+        fun widthOf(text: String): Int = try { fm.stringWidth(text) } catch (_: Throwable) { text.length * 7 }
+        // Compute adaptive target width (pixels) based on toolbar and screen
+        val screenW = try { java.awt.Toolkit.getDefaultToolkit().screenSize.width } catch (_: Throwable) { 1280 }
+        var targetPx = (screenW * 0.25).toInt() // up to 25% of screen width
+        val tbW = try { toolBarRef.width } catch (_: Throwable) { 0 }
+        if (tbW > 0) targetPx = kotlin.math.min(targetPx, (tbW * 0.6).toInt()) // use ~60% of toolbar width
+        targetPx = targetPx.coerceIn(160, 800) // reasonable bounds
+
+        if (widthOf(s) <= targetPx) return s
+
+        val lastSep = s.lastIndexOf('/')
+        if (lastSep < 0 || lastSep >= s.length - 1) {
+          // No separators or trailing; truncate from the left
+          val str = s
+          var cut = 0
+          var candidate = str
+          while (widthOf(candidate) > targetPx && cut < str.length) {
+            cut++
+            candidate = "…" + str.takeLast(str.length - cut)
+          }
+          return candidate
+        }
+        val fileAll = s.substring(lastSep + 1)
+        val prevSep = s.lastIndexOf('/', lastSep - 1)
+        val parentAll = if (prevSep >= 0) s.substring(prevSep + 1, lastSep) else ""
+        val hasTildePrefix = s.startsWith("~/")
+
+        fun compose(includeTilde: Boolean, parent: String, file: String): String = buildString {
+          if (includeTilde && hasTildePrefix) append("~/")
+          append("…/")
+          if (parent.isNotEmpty()) { append(parent); append('/') }
+          append(file)
+        }
+
+        // Try with full parent+file
+        var includeTilde = true
+        var candidate = compose(includeTilde, parentAll, fileAll)
+        if (widthOf(candidate) <= targetPx) return candidate
+        includeTilde = false
+        candidate = compose(includeTilde, parentAll, fileAll)
+        if (widthOf(candidate) <= targetPx) return candidate
+
+        // Left-ellipsize parent progressively
+        var parent = parentAll
+        var steps = 0
+        while (widthOf(compose(includeTilde, parent, fileAll)) > targetPx && parent.isNotEmpty()) {
+          steps++
+          val tail = parentAll.takeLast((parentAll.length - steps).coerceAtLeast(0))
+          parent = if (tail.isNotEmpty()) "…$tail" else "…"
+          if (steps > parentAll.length) break
+        }
+        candidate = compose(includeTilde, parent, fileAll)
+        if (widthOf(candidate) <= targetPx) return candidate
+
+        // If still too wide, left-ellipsize file base name while keeping extension
+        val dot = fileAll.lastIndexOf('.')
+        val ext = if (dot > 0) fileAll.substring(dot) else ""
+        val baseOrig = if (dot > 0) fileAll.substring(0, dot) else fileAll
+        var baseSteps = 0
+        var file = fileAll
+        while (widthOf(compose(includeTilde, parent, file)) > targetPx && baseSteps < baseOrig.length) {
+          baseSteps++
+          val baseTail = baseOrig.takeLast((baseOrig.length - baseSteps).coerceAtLeast(0))
+          val base = if (baseTail.isNotEmpty()) "…$baseTail" else "…"
+          file = base + ext
+        }
+        return compose(includeTilde, parent, file)
+      }
       fun refreshCurrentBibLabel() {
         val path = project.getService(BibLibraryService::class.java).libraryPath()
-        val name = path?.fileName?.toString() ?: "library.bib"
-        currentBibLabel.text = linkTextFor(name, underline = false)
-        currentBibLabel.toolTipText = path?.toString() ?: "Default: <project>/library.bib"
+        val full = if (path != null) path.toString() else run {
+          val home = System.getProperty("user.home")
+          if (home != null) java.nio.file.Paths.get(home, "bibliography", "library.bib").toString() else "\$HOME/bibliography/library.bib"
+        }
+        val display = shortenPathForLabel(full)
+        currentBibLabel.text = linkTextFor(display, underline = false)
+        currentBibLabel.toolTipText = full
       }
       currentBibLabel.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
       currentBibLabel.addMouseListener(object : java.awt.event.MouseAdapter() {
@@ -76,16 +162,30 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         }
         override fun mouseEntered(e: java.awt.event.MouseEvent) {
           val path = project.getService(BibLibraryService::class.java).libraryPath()
-          val name = path?.fileName?.toString() ?: "library.bib"
-          currentBibLabel.text = linkTextFor(name, underline = true)
+          val full = if (path != null) path.toString() else run {
+            val home = System.getProperty("user.home")
+            if (home != null) java.nio.file.Paths.get(home, "bibliography", "library.bib").toString() else "\$HOME/bibliography/library.bib"
+          }
+          val display = shortenPathForLabel(full)
+          currentBibLabel.text = linkTextFor(display, underline = true)
         }
         override fun mouseExited(e: java.awt.event.MouseEvent) {
           val path = project.getService(BibLibraryService::class.java).libraryPath()
-          val name = path?.fileName?.toString() ?: "library.bib"
-          currentBibLabel.text = linkTextFor(name, underline = false)
+          val full = if (path != null) path.toString() else run {
+            val home = System.getProperty("user.home")
+            if (home != null) java.nio.file.Paths.get(home, "bibliography", "library.bib").toString() else "\$HOME/bibliography/library.bib"
+          }
+          val display = shortenPathForLabel(full)
+          currentBibLabel.text = linkTextFor(display, underline = false)
         }
       })
       refreshCurrentBibLabel()
+      // Recompute on toolbar resize to keep label within available width
+      this.addComponentListener(object : java.awt.event.ComponentAdapter() {
+        override fun componentResized(e: java.awt.event.ComponentEvent?) {
+          refreshCurrentBibLabel()
+        }
+      })
       val openBibBtn = JButton(AllIcons.Actions.MenuOpen).apply {
         toolTipText = "Select .bib file used for bibliographies"
         addActionListener {

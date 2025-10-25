@@ -31,22 +31,36 @@ class BibliographySetupAction : AnAction("Insert Bibliography Setup") {
     if (idx < 0) return
     val style = options[idx]
 
-    // Ensure library.bib exists
-    project.getService(BibLibraryService::class.java).ensureLibraryExists()
+    // Resolve and ensure the active bibliography file exists.
+    val svc = project.getService(BibLibraryService::class.java)
+    // Prefer the default HOME path for library.bib; update settings if possible.
+    val home = System.getProperty("user.home")
+    val target = if (home != null) java.nio.file.Paths.get(home, "bibliography", "library.bib") else null
+    try {
+      val settings = project.getService(BibliographySettingsService::class.java)
+      if (target != null && settings != null) settings.setLibraryPath(target.toString())
+    } catch (_: Throwable) {
+      // Ignore if settings service unavailable (tests/headless)
+    }
+    // Ensure the file exists at the resolved path
+    svc.ensureLibraryExists()
+
+    // Normalize path for LaTeX (use forward slashes)
+    val libPath = (svc.libraryPath() ?: target)?.toAbsolutePath()?.normalize()?.toString()?.replace('\\', '/') ?: "library.bib"
 
     val insertion = when (style) {
       "APA7" -> listOf(
         "\\usepackage[style=apa,backend=biber]{biblatex}",
         "\\DeclareLanguageMapping{american}{american-apa}",
-        "\\addbibresource{library.bib}"
+        "\\addbibresource{$libPath}"
       )
       "MLA" -> listOf(
         "\\usepackage[style=mla,backend=biber]{biblatex}",
-        "\\addbibresource{library.bib}"
+        "\\addbibresource{$libPath}"
       )
       else -> listOf(
         "\\usepackage[authordate,backend=biber]{biblatex-chicago}",
-        "\\addbibresource{library.bib}"
+        "\\addbibresource{$libPath}"
       )
     }
 

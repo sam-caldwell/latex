@@ -70,7 +70,8 @@ class BibliographySetupActionIntegrationTest {
     action.actionPerformed(event)
     val result = buf.toString()
     assertTrue(result.contains("\\usepackage"))
-    assertTrue(result.contains("\\addbibresource{library.bib}"))
+    // Should reference a bibliography file ending with library.bib (absolute or relative)
+    assertTrue(result.contains("library.bib}"))
     assertTrue(result.contains("\\printbibliography"))
   }
 }
