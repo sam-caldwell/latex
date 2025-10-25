@@ -81,7 +81,6 @@ class LookupProvidersConfigurable : Configurable {
   }
 
   private fun resetDefaults() {
-    val svc = ApplicationManager.getApplication().getService(LookupSettingsService::class.java)
     model.clear()
     for (id in LookupSettingsService.defaultOrder()) {
       model.addElement(ProviderItem(id, LookupSettingsService.providerDisplayName(id), true))

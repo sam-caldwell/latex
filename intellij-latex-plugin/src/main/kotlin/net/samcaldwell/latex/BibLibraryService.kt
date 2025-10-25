@@ -25,6 +25,10 @@ class BibLibraryService(private val project: Project) {
   private val log = Logger.getInstance(BibLibraryService::class.java)
 
   fun libraryPath(): Path? {
+    val override = try {
+      project.getService(BibliographySettingsService::class.java)?.getLibraryPath()?.trim()
+    } catch (_: Throwable) { null }
+    if (!override.isNullOrEmpty()) return try { Paths.get(override) } catch (_: Throwable) { null }
     val base = project.basePath ?: return null
     return Paths.get(base).resolve("library.bib")
   }
@@ -38,6 +42,7 @@ class BibLibraryService(private val project: Project) {
           appendLine("% Created: ${LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)}")
           appendLine()
         }
+        Files.createDirectories(path.parent)
         Files.write(path, header.toByteArray(StandardCharsets.UTF_8))
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.let { it.refresh(false, false) }
       }

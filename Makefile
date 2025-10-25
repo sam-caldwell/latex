@@ -61,6 +61,9 @@ verify:
 
 clean:
 	$(GRADLE) -p $(PLUGIN_DIR) clean
+	@rm -rf build
+	@rm -rf $(PLUGIN_DIR)/build
+	@mkdir -p build
 
 wrapper:
 	gradle -p $(PLUGIN_DIR) wrapper

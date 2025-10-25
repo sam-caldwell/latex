@@ -2,7 +2,8 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   id("org.jetbrains.intellij.platform") version "2.10.2"
-  kotlin("jvm") version "2.2.21"
+  // Align Kotlin with the 2024.2 platform to avoid runtime conflicts
+  kotlin("jvm") version "2.0.21"
   jacoco
   `maven-publish`
 }
@@ -40,9 +41,11 @@ dependencies {
 
   intellijPlatform {
     intellijIdeaCommunity("2024.2", useInstaller = false)
-    bundledPlugin("com.intellij.java")
     testFramework(TestFrameworkType.Platform)
   }
+
+  // Bundle Kotlin stdlib to avoid depending on Kotlin plugin in target IDEs
+  implementation(kotlin("stdlib"))
 }
 
 // Additional source set for LightPlatform integration tests
@@ -177,6 +180,23 @@ tasks {
     val agent = project.layout.projectDirectory.file(".intellijPlatform/coroutines-javaagent-legacy.jar").asFile
     if (agent.exists()) {
       jvmArgs("-javaagent:${agent.absolutePath}")
+    }
+  }
+}
+
+// Configure the IntelliJ Plugin Verifier to run against a useful set of IDEs
+intellijPlatform {
+  pluginVerification {
+    ides {
+      // JetBrains curated set
+      recommended()
+      // Ensure coverage for these IDEs at minimum
+      ide("IC", "2024.2") // IntelliJ IDEA Community
+      ide("IU", "2024.2") // IntelliJ IDEA Ultimate
+      ide("PC", "2024.2") // PyCharm Community
+      ide("PY", "2024.2") // PyCharm Professional
+      ide("CL", "2024.2") // CLion
+      ide("GO", "2024.2") // GoLand
     }
   }
 }

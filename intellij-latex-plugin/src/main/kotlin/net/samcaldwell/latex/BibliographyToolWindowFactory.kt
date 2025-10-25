@@ -53,21 +53,65 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           EntryDetailDialog(project, svc, blank) { }.show()
         }
       }
+      // Current .bib indicator (clickable to open)
+      val currentBibLabel = JLabel()
+      fun linkTextFor(name: String, underline: Boolean): String {
+        val color = "#1A73E8"
+        val tag = if (underline) "u" else "span style='color:${color}'"
+        return "<html>( <${tag} style='color:${color}'>" + name + "</${if (underline) "u" else "span"}> )</html>"
+      }
+      fun refreshCurrentBibLabel() {
+        val path = project.getService(BibLibraryService::class.java).libraryPath()
+        val name = path?.fileName?.toString() ?: "library.bib"
+        currentBibLabel.text = linkTextFor(name, underline = false)
+        currentBibLabel.toolTipText = path?.toString() ?: "Default: <project>/library.bib"
+      }
+      currentBibLabel.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+      currentBibLabel.addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mouseClicked(e: java.awt.event.MouseEvent) {
+          val svc = project.getService(BibLibraryService::class.java)
+          val path = svc.ensureLibraryExists() ?: return
+          val vFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())
+          if (vFile != null) FileEditorManager.getInstance(project).openFile(vFile, true)
+        }
+        override fun mouseEntered(e: java.awt.event.MouseEvent) {
+          val path = project.getService(BibLibraryService::class.java).libraryPath()
+          val name = path?.fileName?.toString() ?: "library.bib"
+          currentBibLabel.text = linkTextFor(name, underline = true)
+        }
+        override fun mouseExited(e: java.awt.event.MouseEvent) {
+          val path = project.getService(BibLibraryService::class.java).libraryPath()
+          val name = path?.fileName?.toString() ?: "library.bib"
+          currentBibLabel.text = linkTextFor(name, underline = false)
+        }
+      })
+      refreshCurrentBibLabel()
       val openBibBtn = JButton(AllIcons.Actions.MenuOpen).apply {
-        toolTipText = "Open library.bib"
+        toolTipText = "Select .bib file used for bibliographies"
         addActionListener {
-          val path = project.getService(BibLibraryService::class.java).ensureLibraryExists()
-          if (path == null) {
-            Messages.showErrorDialog(project, "Project base path not found.", "Bibliography")
-          } else {
-            val vFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())
-            if (vFile != null) FileEditorManager.getInstance(project).openFile(vFile, true)
+          val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor("bib").apply {
+            title = "Select Bibliography File (.bib)"
+            description = "Choose the .bib file to use for citations in this project"
+          }
+          val settings = project.getService(BibliographySettingsService::class.java)
+          val current = project.getService(BibLibraryService::class.java).libraryPath()
+          val toSelect = if (current != null) LocalFileSystem.getInstance().refreshAndFindFileByIoFile(current.toFile()) else null
+          val chosen = FileChooser.chooseFile(descriptor, project, toSelect)
+          if (chosen != null) {
+            val io = com.intellij.openapi.vfs.VfsUtilCore.virtualToIoFile(chosen).toPath()
+            settings.setLibraryPath(io.toString())
+            // Optionally validate and notify
+            val svc = project.getService(BibLibraryService::class.java)
+            svc.ensureLibraryExists()
+            Messages.showInfoMessage(project, "Using bibliography file:\n${io}", "Bibliography")
+            refreshCurrentBibLabel()
           }
         }
       }
       add(browseBtn)
       add(newBtn)
       add(openBibBtn)
+      add(currentBibLabel)
     }
     // Empty content panel below the toolbar
     val contentPanel = JPanel(BorderLayout())
@@ -78,6 +122,9 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
     toolWindow.contentManager.addContent(content)
   }
 }
+
+// Panel implementation for inline editing; currently unused by the tool window
+private class BibliographyPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
   private val statusLabel = JLabel()
   private var dirty: Boolean = false
   private var isLoading: Boolean = false
@@ -1160,15 +1207,25 @@ private fun currentUserName(): String {
   private class BibliographyBrowserDialog(private val project: Project) : DialogWrapper(project, true) {
   private val svc = project.getService(BibLibraryService::class.java)
   private val model = BrowserTableModel(loadEntries())
-  private val table = JTable(model)
+  private val table = object : JTable(model) {
+    override fun getToolTipText(event: java.awt.event.MouseEvent): String? {
+      val row = rowAtPoint(event.point)
+      val col = columnAtPoint(event.point)
+      return if (row >= 0 && col == 0) "Open details" else null
+    }
+  }
   private val sorter = TableRowSorter<BrowserTableModel>(model)
   private val searchField = JTextField()
   private val typeFilter = JComboBox<String>()
+  private var hoverRow: Int = -1
+  private var hoverCol: Int = -1
 
     init {
       title = "Bibliography Browser"
       init()
       table.rowSorter = sorter
+      // Enable tooltips
+      table.toolTipText = ""
     table.fillsViewportHeight = true
     table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
     // Type column editor as combo (canonical list)
@@ -1176,6 +1233,46 @@ private fun currentUserName(): String {
     table.columnModel.getColumn(1).cellEditor = typeEditor
     // Verified as checkbox
     table.columnModel.getColumn(9).cellEditor = DefaultCellEditor(JCheckBox())
+
+    // Key column rendered like a link (blue; underlined on hover)
+    table.columnModel.getColumn(0).cellRenderer = object : javax.swing.table.DefaultTableCellRenderer() {
+      override fun getTableCellRendererComponent(
+        table: JTable?, value: Any?, isSelected: Boolean, hasFocus: Boolean, row: Int, column: Int
+      ): java.awt.Component {
+        val c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column) as JLabel
+        val text = value?.toString() ?: ""
+        val isHover = (row == hoverRow && column == hoverCol)
+        if (isSelected) {
+          c.text = text
+          c.foreground = (table?.selectionForeground ?: c.foreground)
+        } else {
+          c.foreground = java.awt.Color(0x1976D2)
+          c.text = if (isHover) "<html><u>$text</u></html>" else text
+        }
+        c.cursor = if (isHover) java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR) else java.awt.Cursor.getDefaultCursor()
+        return c
+      }
+    }
+
+    table.addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
+      override fun mouseMoved(e: java.awt.event.MouseEvent) {
+        hoverRow = table.rowAtPoint(e.point)
+        hoverCol = table.columnAtPoint(e.point)
+        if (hoverRow >= 0 && hoverCol == 0) {
+          table.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+        } else {
+          table.cursor = java.awt.Cursor.getDefaultCursor()
+        }
+        table.repaint()
+      }
+    })
+    table.addMouseListener(object : java.awt.event.MouseAdapter() {
+      override fun mouseExited(e: java.awt.event.MouseEvent) {
+        hoverRow = -1; hoverCol = -1
+        table.cursor = java.awt.Cursor.getDefaultCursor()
+        table.repaint()
+      }
+    })
 
     // Build type filter options
     val allTypes = linkedSetOf("All")
@@ -1192,7 +1289,7 @@ private fun currentUserName(): String {
       override fun changedUpdate(e: DocumentEvent) = applyFilter()
     })
 
-    // Open detail editor on double-click
+    // Open detail editor when clicking the Key column (single-click) or on row double-click
     val rowPopup = JPopupMenu().apply {
       val copy = JMenuItem("Copy Citation")
       copy.addActionListener { copySelectedCitation() }
@@ -1203,13 +1300,20 @@ private fun currentUserName(): String {
     }
     table.addMouseListener(object : java.awt.event.MouseAdapter() {
       override fun mouseClicked(e: java.awt.event.MouseEvent) {
-        if (e.clickCount == 2 && javax.swing.SwingUtilities.isLeftMouseButton(e)) {
-          val viewRow = table.rowAtPoint(e.point)
-          if (viewRow >= 0) {
+        val viewRow = table.rowAtPoint(e.point)
+        val viewCol = table.columnAtPoint(e.point)
+        if (viewRow >= 0 && javax.swing.SwingUtilities.isLeftMouseButton(e)) {
+          val openDetails = when {
+            e.clickCount == 2 -> true // double-click anywhere in the row
+            e.clickCount == 1 && viewCol == 0 -> true // single-click on Key column
+            else -> false
+          }
+          if (openDetails) {
             val modelRow = table.convertRowIndexToModel(viewRow)
             val row = model.rows.getOrNull(modelRow) ?: return
             val full = loadEntry(row.originalType, row.key)
             if (full != null) EntryDetailDialog(project, svc, full) { refresh() }.show()
+            return
           }
         }
       }
@@ -1250,6 +1354,14 @@ private fun currentUserName(): String {
     btns.add(deleteBtn)
     btns.add(saveBtn)
     panel.add(btns, BorderLayout.SOUTH)
+
+    // Make the browser default to twice its usual width
+    run {
+      val base = panel.preferredSize
+      val baseWidth = if (base != null && base.width > 0) base.width else 600
+      val baseHeight = if (base != null && base.height > 0) base.height else 400
+      panel.preferredSize = java.awt.Dimension(baseWidth * 2, baseHeight)
+    }
     return panel
   }
 
@@ -1435,8 +1547,9 @@ private fun currentUserName(): String {
     fun commit() { dirty = false }
   }
 
-  // Detail editor dialog for a single entry
-  private class EntryDetailDialog(
+  // Detail editor dialog moved to top-level class; keeping nested copy renamed for reference.
+/*
+  class EntryDetailDialogNested(
     private val project: Project,
     private val svc: BibLibraryService,
     private var entry: BibLibraryService.BibEntry,
@@ -2016,7 +2129,7 @@ private fun currentUserName(): String {
       if (t == "court case") {
         // Case name, reporter OR slip opinion requirements, year, URL optional
         if (!has("title")) mark(titleField)
-        val year = valOf("year"); if (!year.matches(Regex("\\\d{4}"))) mark(yearField)
+        val year = valOf("year"); if (!year.matches(Regex("\\d{4}"))) mark(yearField)
         val hasReporter = has("reporter_volume") || has("reporter") || has("first_page")
         val hasSlip = has("docket") || has("wl")
         if (hasReporter || !hasSlip) {
@@ -2497,4 +2610,5 @@ private fun currentUserName(): String {
       return paragraphs.filter { it.isNotEmpty() }.joinToString("\n\n")
     }
   }
+*/
 }
