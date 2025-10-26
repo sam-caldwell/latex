@@ -83,7 +83,7 @@ tag/patch:
 	$(GRADLE) -p $(PLUGIN_DIR) --no-daemon --stacktrace -DenableLightTests=true clean check buildPlugin; \
 	FILE="$(VERSION_FILE)"; \
 	if [ ! -f "$$FILE" ]; then echo "Not found: $$FILE"; exit 1; fi; \
-	CUR=$$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' "$$FILE"); \
+	CUR=$$(sed -E -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' "$$FILE"); \
 	if [ -z "$$CUR" ]; then echo "Could not determine current version from $$FILE"; exit 1; fi; \
 	if ! echo "$$CUR" | grep -Eq $(SEMVER_RE); then echo "Invalid semantic version: $$CUR"; exit 1; fi; \
 	MAJOR=$$(echo "$$CUR" | cut -d. -f1); \
@@ -115,7 +115,7 @@ tag/pre:
 	$(GRADLE) -p $(PLUGIN_DIR) --no-daemon --stacktrace -DenableLightTests=true clean check buildPlugin; \
 	FILE="$(VERSION_FILE)"; \
 	if [ ! -f "$$FILE" ]; then echo "Not found: $$FILE"; exit 1; fi; \
-	CUR=$$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' "$$FILE"); \
+	CUR=$$(sed -E -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' "$$FILE"); \
 	if [ -z "$$CUR" ]; then echo "Could not determine current version from $$FILE"; exit 1; fi; \
 	if ! echo "$$CUR" | grep -Eq $(SEMVER_RE); then echo "Invalid semantic version in build.gradle.kts: $$CUR"; exit 1; fi; \
 	SHORT=$$(git rev-parse --short HEAD); \
@@ -138,7 +138,7 @@ tag/minor:
 	$(GRADLE) -p $(PLUGIN_DIR) --no-daemon --stacktrace -DenableLightTests=true clean check buildPlugin; \
 	FILE="$(VERSION_FILE)"; \
 	if [ ! -f "$$FILE" ]; then echo "Not found: $$FILE"; exit 1; fi; \
-	CUR=$$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' "$$FILE"); \
+	CUR=$$(sed -E -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' "$$FILE"); \
 	if [ -z "$$CUR" ]; then echo "Could not determine current version from $$FILE"; exit 1; fi; \
 	MAJOR=$$(echo "$$CUR" | cut -d. -f1); \
 	MINOR=$$(echo "$$CUR" | cut -d. -f2); \
@@ -169,7 +169,7 @@ tag/major:
 	$(GRADLE) -p $(PLUGIN_DIR) --no-daemon --stacktrace -DenableLightTests=true clean check buildPlugin; \
 	FILE="$(VERSION_FILE)"; \
 	if [ ! -f "$$FILE" ]; then echo "Not found: $$FILE"; exit 1; fi; \
-	CUR=$$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' "$$FILE"); \
+	CUR=$$(sed -E -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' "$$FILE"); \
 	if [ -z "$$CUR" ]; then echo "Could not determine current version from $$FILE"; exit 1; fi; \
 	MAJOR=$$(echo "$$CUR" | cut -d. -f1); \
 	NEWMAJOR=$$((MAJOR+1)); \

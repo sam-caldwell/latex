@@ -14,18 +14,19 @@ repositories {
 }
 
 group = "net.samcaldwell.latex"
-// Default version for local builds; CI uses tag-derived version if available
-var computedVersion = "0.1.1"
-val refName = System.getenv("GITHUB_REF_NAME") ?: System.getenv("GITHUB_REF")?.substringAfterLast('/')
-if (refName != null && refName.startsWith("v")) {
-  val tagVer = refName.removePrefix("v")
-  // Allow SemVer with optional pre-release suffix
-  val semver = Regex("^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9]+)?$")
-  if (semver.matches(tagVer)) {
-    computedVersion = tagVer
+// Default version for local builds; Makefile bump/tag expects this literal pattern.
+// CI (tagged builds) will override below when GITHUB_REF_NAME like 'vX.Y.Z' is present.
+version = "0.1.3"
+run {
+  val refName = System.getenv("GITHUB_REF_NAME") ?: System.getenv("GITHUB_REF")?.substringAfterLast('/')
+  if (refName != null && refName.startsWith("v")) {
+    val tagVer = refName.removePrefix("v")
+    val semver = Regex("^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9]+)?$")
+    if (semver.matches(tagVer)) {
+      version = tagVer
+    }
   }
 }
-version = computedVersion
 
 // IntelliJ Platform & bundled plugin dependencies (2.x DSL)
 dependencies {
