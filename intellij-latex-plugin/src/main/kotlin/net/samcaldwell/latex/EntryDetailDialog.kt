@@ -246,40 +246,40 @@ class EntryDetailDialog(
     val form = JPanel(GridBagLayout())
     var row = 0
     fun addRow(label: String, comp: JComponent, columns: Int = 1) {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = columns }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,10,4,10); gridwidth = columns }
       form.add(JLabel(label), lc)
       form.add(comp, fc)
       row++
     }
     // Title + Year + Key
     run {
-      val lcTitle = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcTitle = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Title"), lcTitle)
-      val fcTitle = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6) }
+      val fcTitle = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,10,4,10) }
       form.add(titleField, fcTitle)
-      val lcYear = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcYear = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Year"), lcYear)
-      val fcYear = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6) }
+      val fcYear = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10) }
       form.add(yearField, fcYear)
-      val lcKey = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcKey = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Key"), lcKey)
-      val fcKey = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcKey = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(keyField, fcKey)
       row++
     }
     addRow("Type", typeField, columns = 3)
     // Date row
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(dateLabel, lc)
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 3 }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 3 }
       form.add(dateField, fc)
       row++
     }
     // Author input row: person vs corporate
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(authorLabel, lc)
       val personPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0))
       authorFamilyField.columns = 12
@@ -304,25 +304,25 @@ class EntryDetailDialog(
         add(personPanel, "person")
         add(corpPanel, "corp")
       }
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,10,4,10); gridwidth = 3 }
       form.add(authorModeCards, fc)
-      val lcToggle = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcToggle = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(corporateCheck, lcToggle)
       row++
     }
     // Authors list + reordering
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,10,4,10); anchor = GridBagConstraints.NORTHWEST }
       form.add(authorsListLabel, lc)
       val scroll = JScrollPane(authorsList).apply { preferredSize = java.awt.Dimension(200, 120) }
       authorsScrollRef = scroll
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,6,4,6); gridwidth = 3 }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,10,4,10); gridwidth = 3 }
       form.add(scroll, fc)
       val buttons = JPanel(java.awt.GridLayout(2,1,4,4)).apply {
         val up = JButton(AllIcons.Actions.MoveUp); up.toolTipText = "Move up"; up.addActionListener { moveAuthorsUp() }; add(up)
         val dn = JButton(AllIcons.Actions.MoveDown); dn.toolTipText = "Move down"; dn.addActionListener { moveAuthorsDown() }; add(dn)
       }
-      val bc = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
+      val bc = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.NORTHWEST }
       form.add(buttons, bc)
       row++
       val popup = JPopupMenu().apply { val del = JMenuItem("Delete"); del.addActionListener { removeSelectedAuthors() }; add(del) }
@@ -343,73 +343,73 @@ class EntryDetailDialog(
     // Corporate authors dedicated section removed; unified authors list above is used
     // Court case: reporter info
     run {
-      val lcRv = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcRv = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(reporterVolumeLabel, lcRv)
-      val fcRv = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val fcRv = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(reporterVolumeField, fcRv)
-      val lcRa = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcRa = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(reporterAbbrevLabel, lcRa)
-      val fcRa = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
+      val fcRa = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
       form.add(reporterAbbrevField, fcRa)
       row++
-      val lcFp = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcFp = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(firstPageLabel, lcFp)
-      val fcFp = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val fcFp = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(firstPageField, fcFp)
-      val lcPin = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcPin = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(pinpointLabel, lcPin)
-      val fcPin = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcPin = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(pinpointField, fcPin)
       row++
-      val lcDock = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcDock = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(docketNumberLabel, lcDock)
-      val fcDock = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val fcDock = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(docketNumberField, fcDock)
-      val lcWl = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcWl = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(wlCiteLabel, lcWl)
-      val fcWl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcWl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(wlCiteField, fcWl)
       row++
     }
     // Journal + (vol., iss., pgs.) + Publisher on the same row
     run {
-      val lcJournal = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcJournal = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(journalLabel, lcJournal)
-      val fcJournal = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.4 }
+      val fcJournal = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 0.4 }
       form.add(journalField, fcJournal)
 
-      val lcVol = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcVol = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(volumeLabel, lcVol)
-      val fcVol = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcVol = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(volumeField, fcVol)
 
-      val lcIss = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcIss = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(issueLabel, lcIss)
-      val fcIss = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcIss = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(issueField, fcIss)
 
-      val lcPgs = GridBagConstraints().apply { gridx = 6; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcPgs = GridBagConstraints().apply { gridx = 6; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(pagesLabel, lcPgs)
-      val fcPgs = GridBagConstraints().apply { gridx = 7; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcPgs = GridBagConstraints().apply { gridx = 7; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(pagesField, fcPgs)
 
-      val lcPublisher = GridBagConstraints().apply { gridx = 8; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcPublisher = GridBagConstraints().apply { gridx = 8; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(publisherLabel, lcPublisher)
-      val fcPublisher = GridBagConstraints().apply { gridx = 9; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.6 }
+      val fcPublisher = GridBagConstraints().apply { gridx = 9; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 0.6 }
       form.add(publisherField, fcPublisher)
       row++
     }
     // DOI/ISBN + URL row
     run {
-      val lcId = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcId = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(idLabel, lcId)
-      val fcId = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
+      val fcId = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
       form.add(doiField, fcId)
-      val fcLookup = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      val fcLookup = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(lookupBtn, fcLookup)
-      val lcUrl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcUrl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("URL"), lcUrl)
-      val fcUrl = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
+      val fcUrl = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
       form.add(urlField, fcUrl)
       row++
     }
@@ -424,15 +424,18 @@ class EntryDetailDialog(
       addBtn.addActionListener { addKeywordFromField() }
       input.add(keywordInputField)
       input.add(addBtn)
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,10,4,10); gridwidth = 3 }
       form.add(input, fc)
       row++
     }
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,10,4,10); anchor = GridBagConstraints.NORTHWEST }
       form.add(JLabel("Keyword List"), lc)
-      val scroll = JScrollPane(keywordsList).apply { preferredSize = java.awt.Dimension(200, 100) }
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,6,4,6); gridwidth = 3 }
+      val scroll = JScrollPane(keywordsList).apply {
+        preferredSize = java.awt.Dimension(200, 100)
+        minimumSize = java.awt.Dimension(0, 100)
+      }
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,10,4,10); gridwidth = 3 }
       form.add(scroll, fc)
       row++
       val popup = JPopupMenu().apply { val del = JMenuItem("Delete"); del.addActionListener { removeSelectedKeywords() }; add(del) }
@@ -453,18 +456,18 @@ class EntryDetailDialog(
 
     // Metadata header
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(8,6,2,6) }
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(8,10,2,10) }
       val header = JLabel("Metadata")
       form.add(header, lc); row++
-      val sc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,6,6,6) }
+      val sc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,10,6,10) }
       form.add(JSeparator(), sc); row++
     }
     // Source + Verified + Verified By
     run {
-      val lcSrc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcSrc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Source"), lcSrc)
       sourceField.columns = 20
-      val fcSrc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
+      val fcSrc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
       form.add(sourceField, fcSrc)
 
       val verifyPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0)).apply {
@@ -473,19 +476,19 @@ class EntryDetailDialog(
         add(JLabel("Verified By"))
         add(verifiedByField)
       }
-      val fcVerify = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 2 }
+      val fcVerify = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 2 }
       form.add(verifyPanel, fcVerify)
       row++
     }
     // Created + Modified
     run {
-      val lcCreated = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      val lcCreated = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Created"), lcCreated)
-      val fcCreated = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
+      val fcCreated = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
       form.add(createdField, fcCreated)
-      val lcModified = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      val lcModified = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
       form.add(JLabel("Modified"), lcModified)
-      val fcModified = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
+      val fcModified = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,10,4,10); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
       form.add(modifiedField, fcModified)
       row++
     }

@@ -583,7 +583,19 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
       add(openBtn)
       add(viewBtn)
     }
-    topPanel.add(toolBar, BorderLayout.NORTH)
+    val toolBar2 = JToolBar().apply {
+      isFloatable = false
+      val verifyBtn = JButton("Verify File").apply {
+        toolTipText = "Parse and verify all records in library.bib"
+        addActionListener { verifyFile() }
+      }
+      add(verifyBtn)
+    }
+    val toolRows = JPanel(java.awt.GridLayout(2, 1, 0, 0)).apply {
+      add(toolBar)
+      add(toolBar2)
+    }
+    topPanel.add(toolRows, BorderLayout.NORTH)
     topPanel.add(JScrollPane(formPanel), BorderLayout.CENTER)
     // Bottom search section with criteria list
     val searchSection = JPanel(BorderLayout())
@@ -792,6 +804,86 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     } else {
       Messages.showErrorDialog(project, "Unable to open library.bib.", "Bibliography")
     }
+  }
+
+  private fun verifyFile() {
+    val svc = project.getService(BibLibraryService::class.java)
+    val path = svc.ensureLibraryExists()
+    if (path == null) {
+      Messages.showErrorDialog(project, "Project base path not found.", "Bibliography")
+      return
+    }
+    val reportHolder = java.util.concurrent.atomic.AtomicReference<String>(null)
+    com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously({
+      val indicator = com.intellij.openapi.progress.ProgressManager.getInstance().progressIndicator
+      if (indicator != null) {
+        indicator.isIndeterminate = true
+        indicator.text = "Verifying"
+      }
+      val entries = svc.readEntries()
+      val issuesByKey = mutableMapOf<String, MutableList<String>>()
+      val globalIssues = mutableListOf<String>()
+      // Duplicate key check (across all types)
+      val dups = entries.groupBy { it.key }.filter { it.value.size > 1 }
+      for ((key, list) in dups) {
+        val types = list.joinToString(", ") { it.type }
+        issuesByKey.computeIfAbsent(key) { mutableListOf() }
+          .add("ERROR: duplicate key across types: $types")
+      }
+      // Scan raw file for disallowed record types (outside allowed + non-entry directives)
+      runCatching {
+        val raw = java.nio.file.Files.readString(path)
+        val m = java.util.regex.Pattern.compile("@([a-zA-Z]+)\\s*\\{", java.util.regex.Pattern.MULTILINE).matcher(raw)
+        val seen = mutableSetOf<String>()
+        while (m.find()) {
+          val t = m.group(1).lowercase()
+          if (seen.add(t)) {
+            val tNorm = try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, t) as String } catch (_: Throwable) { t }
+            val allowed = BibLibraryService.ALLOWED_BIBLATEX_TYPES
+            val nonEntries = BibLibraryService.NONENTRY_DIRECTIVES
+            if (!allowed.contains(tNorm) && !nonEntries.contains(tNorm) && tNorm != "misc" && tNorm != "inproceedings") {
+              globalIssues.add("ERROR: disallowed or unknown record type '@$t'")
+            }
+          }
+        }
+      }
+      var errs = globalIssues.count { it.startsWith("ERROR:") }
+      var warns = globalIssues.size - errs
+      for (e in entries) {
+        val problems = svc.validateEntryDetailed(e)
+        if (problems.isEmpty()) continue
+        val key = e.key
+        for (p in problems) {
+          val level = if (p.severity == BibLibraryService.Severity.ERROR) { errs++; "ERROR" } else { warns++; "WARNING" }
+          issuesByKey.computeIfAbsent(key) { mutableListOf() }.add("$level: ${p.field} – ${p.message}")
+        }
+      }
+      val summary = StringBuilder()
+      summary.append("Verified ").append(entries.size).append(" entr")
+        .append(if (entries.size == 1) "y" else "ies").append('.')
+        .append(' ').append("Errors: ").append(errs).append(", Warnings: ").append(warns).append('.')
+      if (issuesByKey.isNotEmpty() || globalIssues.isNotEmpty()) {
+        summary.append("\n\nIssues:\n")
+        for (gi in globalIssues) summary.append("- ").append(gi).append('\n')
+        val sorted = issuesByKey.toSortedMap()
+        var lines = 0
+        for ((key, msgs) in sorted) {
+          summary.append("- ").append(key).append(':').append(' ').append('\n')
+          for (m in msgs) {
+            summary.append("    · ").append(m).append('\n')
+            lines++
+            if (lines > 400) { summary.append("    … (truncated)\n"); break }
+          }
+          if (lines > 400) break
+        }
+      }
+      reportHolder.set(summary.toString())
+    }, "Verifying", false, project)
+    val report = reportHolder.get() ?: return
+    val hasErrors = report.contains("ERROR:")
+    if (hasErrors) Messages.showErrorDialog(project, report, "Verify File")
+    else if (report.contains("Warnings:")) Messages.showWarningDialog(project, report, "Verify File")
+    else Messages.showInfoMessage(project, report, "Verify File")
   }
 
   // Import helpers via old DOI/URL UI have been removed.

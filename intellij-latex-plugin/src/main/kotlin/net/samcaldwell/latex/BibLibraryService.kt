@@ -25,6 +25,15 @@ import java.io.ByteArrayInputStream
   class BibLibraryService(private val project: Project) {
   private val log = Logger.getInstance(BibLibraryService::class.java)
 
+  companion object {
+    val ALLOWED_BIBLATEX_TYPES: Set<String> = setOf(
+      "article", "book", "booklet", "inbook", "incollection", "inproceedings",
+      "manual", "mastersthesis", "misc", "phdthesis", "proceedings",
+      "techreport", "unpublished", "online"
+    )
+    val NONENTRY_DIRECTIVES: Set<String> = setOf("string", "preamble", "comment")
+  }
+
   fun libraryPath(): Path? {
     val override = try {
       project.getService(BibliographySettingsService::class.java)?.getLibraryPath()?.trim()
@@ -969,14 +978,17 @@ import java.io.ByteArrayInputStream
         text = migrated
       }
       val entries = mutableListOf<BibEntry>()
-      val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)\\n\\}", Pattern.MULTILINE)
+      // Treat each entry as an atomic unit: match from header until a standalone closing brace line
+      val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)^\\s*}\\s*", Pattern.MULTILINE)
       val m = entryPattern.matcher(text)
       while (m.find()) {
-        val type = normalizeType(m.group(1).lowercase())
+        val headerType = normalizeType(m.group(1).lowercase())
         val key = m.group(2)
         val body = m.group(3)
         val fields = parseFields(body)
-        entries.add(BibEntry(type, key, fields))
+        val subtype = fields["entrysubtype"]?.trim()?.lowercase()
+        val effective = if (headerType == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else headerType
+        entries.add(BibEntry(effective, key, fields))
       }
       entries
     } catch (t: Throwable) {
@@ -1006,11 +1018,12 @@ import java.io.ByteArrayInputStream
         log.warn("Validation issues for ${entry.type}:{${entry.key}}: " + issues.filter { it.severity == Severity.ERROR }.joinToString("; ") { it.field + ": " + it.message })
       }
       val original = Files.readString(path)
-      val normalizedType = normalizeType(entry.type.trim().lowercase())
+      val originalType = normalizeType(entry.type.trim().lowercase())
+      val (normalizedType, entrySubType) = mapToAllowedForWrite(originalType)
       val key = entry.key.trim()
 
-      // Regex to find existing entry by type+key, across lines
-      val pattern = Pattern.compile("@${Pattern.quote(normalizedType)}\\s*\\{\\s*${Pattern.quote(key)}\\s*,[\\s\\S]*?\\}\n?", Pattern.MULTILINE)
+      // Regex to find existing entry by type+key, across lines; stop at a standalone closing brace line
+      val pattern = Pattern.compile("@${Pattern.quote(normalizedType)}\\s*\\{\\s*${Pattern.quote(key)}\\s*,[\\s\\S]*?^\\s*}\\s*\n?", Pattern.MULTILINE)
       val matcher = pattern.matcher(original)
       val now = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
       val updated = if (matcher.find()) {
@@ -1018,6 +1031,8 @@ import java.io.ByteArrayInputStream
         val matchText = matcher.group()
         val existingCreated = extractFieldValue(matchText, "created")
         val fields = entry.fields.toMutableMap()
+        // If downgraded, preserve UI type in entrysubtype
+        if (normalizedType == "misc" && !entrySubType.isNullOrBlank()) fields["entrysubtype"] = entrySubType
         // Ensure year default when absent
         val yr = fields["year"]?.trim()
         if (yr.isNullOrEmpty()) fields["year"] = "n.d."
@@ -1033,6 +1048,7 @@ import java.io.ByteArrayInputStream
       } else {
         // New entry: set created and modified to now (override if present)
         val fields = entry.fields.toMutableMap()
+        if (normalizedType == "misc" && !entrySubType.isNullOrBlank()) fields["entrysubtype"] = entrySubType
         // Ensure year default when absent
         val yr = fields["year"]?.trim()
         if (yr.isNullOrEmpty()) fields["year"] = "n.d."
@@ -1055,9 +1071,38 @@ import java.io.ByteArrayInputStream
   }
 
   private fun normalizeType(t: String): String = when (t.lowercase().trim()) {
+    // Historical/legacy synonyms seen in older plugin versions
     "music" -> "song"
+    // Common BibLaTeX synonyms
+    "conference" -> "inproceedings"
+    "phd thesis", "phd-thesis" -> "phdthesis"
+    "masters thesis", "master's thesis", "masters-thesis" -> "mastersthesis"
+    "tech report", "technical report" -> "techreport"
+    "website", "web" -> "online"
     else -> t.lowercase().trim()
   }
+
+  // Returns a pair of (fileType, entrySubType?) mapped to the strict BibLaTeX set.
+  // If the given type is not one of the allowed types, we serialize as @misc and
+  // preserve the UI type in entrysubtype.
+  private fun mapToAllowedForWrite(uiType: String): Pair<String, String?> {
+    val t = normalizeType(uiType)
+    // Directly allowed
+    if (ALLOWED_BIBLATEX_TYPES.contains(t)) return t to null
+    // Additional synonyms that map to allowed types without needing entrysubtype
+    val direct = when (t) {
+      "conference" -> "inproceedings"
+      "report" -> "techreport"
+      "book chapter" -> "incollection"
+      else -> null
+    }
+    if (direct != null && ALLOWED_BIBLATEX_TYPES.contains(direct)) return direct to null
+    // Everything else downgraded to misc with entrysubtype preserved
+    return "misc" to t
+  }
+
+  // Map any input type to one of the strict, allowed BibLaTeX entry types.
+  private fun serializeTypeForBib(t: String): String = mapToAllowedForWrite(t).first
 
   private fun extractFieldValue(entryText: String, fieldName: String): String? {
     return try {
@@ -1481,14 +1526,13 @@ import java.io.ByteArrayInputStream
   }
 
   private fun makeBibEntry(defaultType: String, fields: Map<String, String>, keyHint: String? = null, sourceTag: String? = null): BibEntry {
-    val type = fields["entrytype"] ?: defaultType
+    val type = defaultType
     val author = fields["author"]
     val title = fields["title"]
     val year = fields["year"]
     val base = keyHint ?: canonicalizeKeyBase(author, title, year)
     val key = suggestDuplicateKey(base.ifBlank { "ref" })
     val finalFields = fields.toMutableMap().apply {
-      remove("entrytype")
       if (!sourceTag.isNullOrBlank()) this["source"] = "automated ($sourceTag)"
       if (!this.containsKey("verified")) this["verified"] = "false"
     }
@@ -1843,25 +1887,44 @@ import java.io.ByteArrayInputStream
   }
 
   fun parseSingleEntry(bibtex: String): BibEntry? {
-    val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)\\n\\}", Pattern.MULTILINE)
+    // Atomic single-entry parse: header through standalone closing brace line
+    val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)^\\s*}\\s*", Pattern.MULTILINE)
     val m = entryPattern.matcher(bibtex)
     if (!m.find()) return null
-    val type = m.group(1).lowercase()
+    val typeHead = normalizeType(m.group(1).lowercase())
     val key = m.group(2)
     val body = m.group(3)
     val fields = parseFields(body)
-    return BibEntry(type, key, fields)
+    val subtype = fields["entrysubtype"]?.trim()?.lowercase()
+    val effective = if (typeHead == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else typeHead
+    return BibEntry(effective, key, fields)
   }
 
   fun deleteEntry(type: String, key: String): Boolean {
     val path = ensureLibraryExists() ?: return false
     return try {
       val original = Files.readString(path)
-      val pattern = Pattern.compile("@${Pattern.quote(type.trim().lowercase())}\\s*\\{\\s*${Pattern.quote(key.trim())}\\s*,[\\s\\S]*?\\}\\n?", Pattern.MULTILINE)
-      val m = pattern.matcher(original)
-      if (!m.find()) return false
-      val updated = m.replaceFirst("")
-      Files.writeString(path, updated, StandardCharsets.UTF_8)
+      val tNorm = normalizeType(type)
+      val header = serializeTypeForBib(tNorm)
+      var updated: String? = null
+      // Try delete with the expected serialized header type
+      run {
+        val p = Pattern.compile(
+          "@${Pattern.quote(header)}\\s*\\{\\s*${Pattern.quote(key.trim())}\\s*,[\\s\\S]*?^\\s*}\\s*\n?",
+          Pattern.MULTILINE
+        )
+        val m = p.matcher(original)
+        if (m.find()) updated = m.replaceFirst("")
+      }
+      // Fallback: delete any entry matching the key regardless of header
+      if (updated == null) {
+        val pAny = Pattern.compile("@[a-zA-Z]+\\s*\\{\\s*${Pattern.quote(key.trim())}\\s*,[\\s\\S]*?^\\s*}\\s*\n?", Pattern.MULTILINE)
+        val m2 = pAny.matcher(original)
+        if (m2.find()) updated = m2.replaceFirst("")
+      }
+      if (updated == null) return false
+      val cleaned = updated!!.replace(Regex("\n{3,}"), "\n\n")
+      Files.writeString(path, cleaned, StandardCharsets.UTF_8)
       LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.refresh(false, false)
       true
     } catch (t: Throwable) {
