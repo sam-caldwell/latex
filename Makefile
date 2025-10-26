@@ -55,6 +55,9 @@ build:
 run:
 	$(GRADLE) -p $(PLUGIN_DIR) runIde
 
+# Developer-friendly alias: `make runIde` launches the sandbox IDE
+runIde: run
+
 verify:
 	@echo "Note: verifyPlugin may download IDEs to test compatibility"
 	$(GRADLE) -p $(PLUGIN_DIR) verifyPlugin

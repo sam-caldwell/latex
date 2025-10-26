@@ -2,12 +2,12 @@ package net.samcaldwell.latex
 
 import com.intellij.openapi.application.ApplicationManager
 import java.net.HttpURLConnection
-import java.net.URL
+import java.net.URI
 
 object HttpUtil {
   fun get(url: String, accept: String? = null, vararg aliases: String, timeoutMs: Int = 15000): String? {
     return try {
-      val u = URL(url)
+      val u = URI(url).toURL()
       val conn = u.openConnection() as HttpURLConnection
       conn.instanceFollowRedirects = true
       if (accept != null) conn.setRequestProperty("Accept", accept)
@@ -35,7 +35,7 @@ object HttpUtil {
 
   fun getBytes(url: String, accept: String? = null, vararg aliases: String, timeoutMs: Int = 20000): ByteArray? {
     return try {
-      val u = URL(url)
+      val u = URI(url).toURL()
       val conn = u.openConnection() as HttpURLConnection
       conn.instanceFollowRedirects = true
       if (accept != null) conn.setRequestProperty("Accept", accept)

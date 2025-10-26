@@ -39,6 +39,229 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
     val host = object : JPanel(BorderLayout()), Disposable {
       override fun dispose() {}
     }
+    // Validation panel shown directly below main toolbar after Verify runs
+    data class VerifyIssue(val display: String, val offset: Int)
+    val validationModel = DefaultListModel<VerifyIssue>()
+    val validationList = JList(validationModel)
+    var hoverIndex = -1
+    validationList.cellRenderer = object : DefaultListCellRenderer() {
+      override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
+        val text = if (value is VerifyIssue) value.display else value?.toString() ?: ""
+        val c = super.getListCellRendererComponent(list, text, index, isSelected, cellHasFocus)
+        if (!isSelected && index == hoverIndex) {
+          c.background = java.awt.Color(0xE6, 0xF2, 0xFF)
+          (c as JComponent).isOpaque = true
+        }
+        return c
+      }
+    }
+    validationList.addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
+      override fun mouseMoved(e: java.awt.event.MouseEvent) {
+        val idx = validationList.locationToIndex(e.point)
+        if (idx != hoverIndex) { hoverIndex = idx; validationList.repaint() }
+      }
+    })
+    validationList.addMouseListener(object : java.awt.event.MouseAdapter() {
+      override fun mouseExited(e: java.awt.event.MouseEvent) { if (hoverIndex != -1) { hoverIndex = -1; validationList.repaint() } }
+      override fun mouseClicked(e: java.awt.event.MouseEvent) {
+        if (e.clickCount == 2) {
+          val idx = validationList.locationToIndex(e.point)
+          if (idx >= 0 && idx < validationModel.size()) {
+            val issue = validationModel.get(idx)
+            val svc = project.getService(BibLibraryService::class.java)
+            val path = svc.ensureLibraryExists() ?: return
+            val vFile = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())
+            if (vFile != null) {
+              com.intellij.openapi.fileEditor.OpenFileDescriptor(project, vFile, issue.offset).navigate(true)
+            }
+          }
+        }
+      }
+    })
+    val validationSummary = JLabel("")
+    val validationContainer = JPanel(BorderLayout()).apply {
+      border = BorderFactory.createCompoundBorder(
+        BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color(0xE0, 0xE0, 0xE0)),
+        BorderFactory.createEmptyBorder(6, 6, 6, 6)
+      )
+      add(validationSummary, BorderLayout.NORTH)
+      add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 120) }, BorderLayout.CENTER)
+      isVisible = false
+    }
+
+    fun runVerifyAndPopulate() {
+      val svc = project.getService(BibLibraryService::class.java)
+      val path = svc.ensureLibraryExists() ?: run {
+        validationSummary.text = "No library.bib configured"
+        validationModel.clear()
+        validationContainer.isVisible = true
+        return
+      }
+      val result = java.util.concurrent.atomic.AtomicReference<String>()
+      val globalIssues = java.util.Collections.synchronizedList(mutableListOf<VerifyIssue>())
+      val perEntryIssues = java.util.Collections.synchronizedList(mutableListOf<VerifyIssue>())
+      com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously({
+        val indicator = com.intellij.openapi.progress.ProgressManager.getInstance().progressIndicator
+        if (indicator != null) { indicator.isIndeterminate = true; indicator.text = "Verifying" }
+        val raw = java.nio.file.Files.readString(path)
+        val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
+        val parsed = parser.parse()
+        var errs = 0; var warns = 0
+        // Parser syntax errors
+        for (pe in parsed.errors) {
+          val lc = parser.toLineCol(pe.offset)
+          globalIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${pe.message}", pe.offset))
+          errs++
+        }
+        // Convert entries to validation form and collect offsets
+        val entries = mutableListOf<BibLibraryService.BibEntry>()
+        val entryOffsets = mutableMapOf<String, MutableList<Int>>()
+        val fieldOffsets = mutableMapOf<Pair<String, String>, Int>()
+        for (node in parsed.file.nodes) {
+          if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
+            val map = linkedMapOf<String, String>()
+            for (f in node.fields) {
+              val value = net.samcaldwell.latex.bibtex.BibParser.flattenValue(f.value)
+              map[f.name.lowercase()] = value
+              fieldOffsets[node.key to f.name.lowercase()] = f.valueOffset
+            }
+            entries += BibLibraryService.BibEntry(node.type.lowercase(), node.key, map)
+            entryOffsets.computeIfAbsent(node.key) { mutableListOf() }.add(node.headerOffset)
+          }
+        }
+        // Duplicates per key
+        val dups = entries.groupBy { it.key }.filter { it.value.size > 1 }
+        for ((key, list) in dups) {
+          val offsets = entryOffsets[key] ?: emptyList()
+          for (i in 1 until offsets.size) {
+            val off = offsets[i]
+            val lc = parser.toLineCol(off)
+            perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: duplicate key across types: ${list.joinToString(", ") { it.type }} [${key}]", off))
+            errs++
+          }
+        }
+        // Disallowed types
+        for (node in parsed.file.nodes) {
+          if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
+            val tNorm = try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, node.type.lowercase()) as String } catch (_: Throwable) { node.type.lowercase() }
+            val allowed = BibLibraryService.ALLOWED_BIBLATEX_TYPES
+            val nonEntries = BibLibraryService.NONENTRY_DIRECTIVES
+            if (!allowed.contains(tNorm) && tNorm != "misc" && tNorm != "inproceedings" && !nonEntries.contains(tNorm)) {
+              val lc = parser.toLineCol(node.headerOffset)
+              globalIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: disallowed or unknown record type '@${node.type}'", node.headerOffset))
+              errs++
+            }
+          }
+        }
+        // Semantic field validation
+        for (e in entries) {
+          val problems = svc.validateEntryDetailed(e)
+          for (p in problems) {
+            val name = p.field.lowercase()
+            val off = fieldOffsets[e.key to name] ?: entryOffsets[e.key]?.firstOrNull() ?: 0
+            val lc = parser.toLineCol(off)
+            val lvl = if (p.severity == BibLibraryService.Severity.ERROR) { errs++; "ERROR" } else { warns++; "WARNING" }
+            perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ${lvl}: ${p.field} – ${p.message} [${e.key}]", off))
+          }
+        }
+        val sb = StringBuilder()
+        sb.append("Verified ").append(entries.size).append(" entr").append(if (entries.size == 1) "y" else "ies").append('.').append(' ')
+        sb.append("Errors: ").append(errs).append(", Warnings: ").append(warns).append('.')
+        result.set(sb.toString())
+      }, "Verifying", false, project)
+
+      // Populate the panel
+      val summary = result.get() ?: ""
+      validationSummary.text = summary
+      validationModel.clear()
+      for (gi in globalIssues) validationModel.addElement(gi)
+      for (ei in perEntryIssues) validationModel.addElement(ei)
+      validationContainer.isVisible = true
+      validationContainer.revalidate(); validationContainer.repaint()
+    }
+
+    fun reformatBibliography() {
+      val svc = project.getService(BibLibraryService::class.java)
+      val path = svc.ensureLibraryExists() ?: run {
+        Messages.showWarningDialog(project, "No library.bib configured", "Reformat")
+        return
+      }
+      val bak = path.resolveSibling(path.fileName.toString() + ".bak")
+      val result = java.util.concurrent.atomic.AtomicReference<String>()
+      com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously({
+        val indicator = com.intellij.openapi.progress.ProgressManager.getInstance().progressIndicator
+        if (indicator != null) { indicator.isIndeterminate = true; indicator.text = "Reformatting" }
+
+        // 1) Create backup .bak
+        try {
+          java.nio.file.Files.copy(path, bak, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } catch (t: Throwable) {
+          result.set("Failed to create backup: ${t.message}"); return@runProcessWithProgressSynchronously
+        }
+
+        // 2) Open .bak read-only in editor (best-effort mark as read-only)
+        try {
+          bak.toFile().setWritable(false)
+          com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(bak.toFile())?.let { vBak ->
+            vBak.refresh(false, false)
+            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vBak, true)
+          }
+        } catch (_: Throwable) { }
+
+        // 3) Read entries from .bak
+        val raw = try { java.nio.file.Files.readString(bak) } catch (t: Throwable) {
+          result.set("Failed to read backup: ${t.message}"); return@runProcessWithProgressSynchronously }
+        val entries0 = svc.readEntriesFromString(raw)
+        // Build the union of all field names across records
+        val allKeys = entries0.flatMap { it.fields.keys }.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val entries = entries0.map { e ->
+          val f = e.fields.toMutableMap()
+          // Add any missing fields with empty value
+          for (k in allKeys) if (!f.containsKey(k)) f[k] = ""
+          // Ensure year default if blank
+          val yr = f["year"]?.trim()
+          if (yr.isNullOrEmpty()) f["year"] = "n.d."
+          e.copy(fields = f)
+        }
+
+        // 4) Sort by type, author, title, year
+        val sorted = entries.sortedWith(compareBy(
+          { it.type.lowercase() },
+          { it.fields["author"]?.lowercase().orEmpty() },
+          { (it.fields["title"] ?: it.fields["booktitle"]).orEmpty().lowercase() },
+          { java.util.regex.Pattern.compile("\\b(\\d{4})\\b").matcher(it.fields["year"].orEmpty()).let { m -> if (m.find()) m.group(1) else "n.d." } }
+        ))
+
+        // 5) Serialize with alphanumeric field order and write with lock + truncate
+        val sb = StringBuilder()
+        for (e in sorted) sb.append(svc.serializeEntryAlpha(e))
+        val bytes = sb.toString().toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+        try {
+          java.nio.channels.FileChannel.open(path, java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING).use { ch ->
+            val lock = try { ch.lock() } catch (_: Throwable) { null }
+            ch.write(java.nio.ByteBuffer.wrap(bytes))
+            lock?.release()
+          }
+        } catch (t: Throwable) {
+          result.set("Failed to write reformatted file: ${t.message}")
+          return@runProcessWithProgressSynchronously
+        }
+
+        // 6) Open the reformatted .bib in editor and refresh
+        try {
+          com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.let { vFile ->
+            vFile.refresh(false, false)
+            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vFile, true)
+          }
+        } catch (_: Throwable) { }
+
+        result.set("Reformatted ${sorted.size} entr" + if (sorted.size == 1) "y" else "ies")
+      }, "Reformatting", false, project)
+
+      val msg = result.get()
+      if (!msg.isNullOrBlank()) Messages.showInfoMessage(project, msg, "Reformat")
+    }
+
     val toolBar = JToolBar().apply {
       isFloatable = false
       val toolBarRef = this
@@ -208,14 +431,25 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           }
         }
       }
+      val verifyBtn = JButton(AllIcons.General.InspectionsEye).apply {
+        toolTipText = "Verify .bib file"
+        addActionListener { runVerifyAndPopulate() }
+      }
+      val reformatBtn = JButton(AllIcons.Actions.Refresh).apply {
+        toolTipText = "Reformat .bib file (backup .bak)"
+        addActionListener { reformatBibliography() }
+      }
       add(browseBtn)
       add(newBtn)
       add(openBibBtn)
+      add(verifyBtn)
+      add(reformatBtn)
       add(currentBibLabel)
     }
     // Empty content panel below the toolbar
     val contentPanel = JPanel(BorderLayout())
     host.add(toolBar, BorderLayout.NORTH)
+    contentPanel.add(validationContainer, BorderLayout.NORTH)
     host.add(contentPanel, BorderLayout.CENTER)
     val content = ContentFactory.getInstance().createContent(host, "", false)
     content.setDisposer(host)

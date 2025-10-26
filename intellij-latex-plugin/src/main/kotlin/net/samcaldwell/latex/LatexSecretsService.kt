@@ -1,6 +1,7 @@
 package net.samcaldwell.latex
 
 import com.intellij.credentialStore.CredentialAttributes
+import com.intellij.credentialStore.generateServiceName
 import com.intellij.credentialStore.Credentials
 import com.intellij.ide.passwordSafe.PasswordSafe
 import com.intellij.openapi.components.Service
@@ -9,7 +10,31 @@ import com.intellij.openapi.components.Service
 class LatexSecretsService {
   private val NEW_NS = "net.samcaldwell.latex"
 
-  private fun attributes(ns: String, name: String) = CredentialAttributes("$ns/$name")
+  private fun attributes(ns: String, name: String): CredentialAttributes {
+    val service = generateServiceName(ns, name)
+    // Create CredentialAttributes reflectively to avoid linking against deprecated constructors
+    // across IDE baselines (243–252). Prefer the (String, String, Class, boolean) signature.
+    return try {
+      val ctor = CredentialAttributes::class.java.getDeclaredConstructor(
+        String::class.java, String::class.java, Class::class.java, Boolean::class.javaPrimitiveType
+      )
+      ctor.newInstance(service, null, null, false)
+    } catch (_: Throwable) {
+      // Fallback to the Kotlin primary constructor via reflection with default args mask
+      try {
+        val marker = Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
+        val ctor = CredentialAttributes::class.java.getDeclaredConstructor(
+          String::class.java, String::class.java, Class::class.java, Boolean::class.javaPrimitiveType,
+          Int::class.javaPrimitiveType, marker
+        )
+        // Default requestor + isPasswordMemoryOnly -> mask 0b1100 = 12
+        ctor.newInstance(service, null, null, false, 12, null)
+      } catch (e: Throwable) {
+        // As a last resort, rethrow with context
+        throw IllegalStateException("Unable to construct CredentialAttributes compatibly", e)
+      }
+    }
+  }
 
   fun setSecret(name: String, secret: String?) {
     if (secret.isNullOrEmpty()) {
@@ -35,7 +60,7 @@ class LatexSecretsService {
   //  - legacy keys for compatibility (e.g., doi.authToken)
   fun getTokenForUrl(urlOrHost: String, vararg aliases: String): String? {
     val host = try {
-      val u = if (urlOrHost.contains("://")) java.net.URL(urlOrHost) else null
+      val u = if (urlOrHost.contains("://")) java.net.URI(urlOrHost) else null
       (u?.host ?: urlOrHost).lowercase()
     } catch (_: Throwable) { urlOrHost.lowercase() }
 

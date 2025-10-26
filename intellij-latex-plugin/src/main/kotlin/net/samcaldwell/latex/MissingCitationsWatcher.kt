@@ -1,7 +1,7 @@
 package net.samcaldwell.latex
 
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.AppTopics
+// Avoid deprecated AppTopics; subscribe directly to FileDocumentManagerListener.TOPIC
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileDocumentManagerListener
@@ -13,7 +13,7 @@ import java.util.regex.Pattern
 class MissingCitationsWatcher : StartupActivity.DumbAware {
   override fun runActivity(project: Project) {
     val bus = project.messageBus.connect(project)
-    bus.subscribe(AppTopics.FILE_DOCUMENT_SYNC, object : FileDocumentManagerListener {
+    bus.subscribe(FileDocumentManagerListener.TOPIC, object : FileDocumentManagerListener {
       override fun beforeDocumentSaving(document: Document) {
         val vf = FileDocumentManager.getInstance().getFile(document) ?: return
         if (vf.extension?.lowercase() != TexFileType.defaultExtension) return

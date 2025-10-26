@@ -10,7 +10,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
-import com.intellij.notification.Notification
+import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.notification.Notifications
 import com.intellij.execution.configurations.GeneralCommandLine
@@ -69,8 +69,9 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
         indicator.isIndeterminate = true
         val ok = installMissing(project, missing)
         ApplicationManager.getApplication().invokeLater {
-          if (ok) Notifications.Bus.notify(Notification("LaTeX", "LaTeX Tools", "Installation finished. You may need to restart IDE/terminal.", NotificationType.INFORMATION), project)
-          else Notifications.Bus.notify(Notification("LaTeX", "LaTeX Tools", "Installation failed or partially completed. See log for details.", NotificationType.WARNING), project)
+          val group = NotificationGroupManager.getInstance().getNotificationGroup("LaTeX")
+          if (ok) group.createNotification("LaTeX Tools", "Installation finished. You may need to restart IDE/terminal.", NotificationType.INFORMATION).notify(project)
+          else group.createNotification("LaTeX Tools", "Installation failed or partially completed. See log for details.", NotificationType.WARNING).notify(project)
         }
       }
     }.queue()
@@ -84,14 +85,13 @@ class DependencyManager : PersistentStateComponent<DependencyManager.State> {
   }
 
   private fun notifyMissing(project: Project, missing: List<String>) {
-    Notifications.Bus.notify(
-      Notification(
-        "LaTeX",
+    NotificationGroupManager.getInstance()
+      .getNotificationGroup("LaTeX")
+      .createNotification(
         "Missing LaTeX Dependencies",
         "Missing: ${missing.joinToString(", ")}. Use Tools → Install LaTeX Dependencies to set up.",
         NotificationType.WARNING
-      ), project
-    )
+      ).notify(project)
   }
 
   private fun installMissing(project: Project, missing: List<String>): Boolean {

@@ -74,7 +74,13 @@ configurations.all {
 }
 
 tasks {
-  runIde { jvmArgs = listOf("-Xmx2g") }
+  runIde {
+    // Give the IDE ample heap and enable dynamic plugin auto-reload for faster iteration
+    jvmArgs = listOf(
+      "-Xmx2g",
+      "-Didea.auto.reload.plugins=true"
+    )
+  }
 
   test {
     useJUnitPlatform()

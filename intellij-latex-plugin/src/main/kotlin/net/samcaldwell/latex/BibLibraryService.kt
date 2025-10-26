@@ -108,7 +108,7 @@ import java.io.ByteArrayInputStream
     for (k in required) if (!has(k)) err(k, "Missing required field: $k")
 
     val y = valOf("year")
-    if (y.isNotEmpty() && !y.matches(Regex("\\d{4}"))) err("year", "Year must be 4 digits")
+    if (y.isNotEmpty() && !y.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) err("year", "Year must be 4 digits or n.d.")
 
     run {
       val doi = valOf("doi"); val isbn = valOf("isbn"); val idVal = if (t == "book") isbn else doi
@@ -997,16 +997,64 @@ import java.io.ByteArrayInputStream
     }
   }
 
+  // Parse all entries from the provided BibTeX text (same semantics as readEntries()).
+  fun readEntriesFromString(text: String): List<BibEntry> {
+    return try {
+      val entries = mutableListOf<BibEntry>()
+      val entryPattern = Pattern.compile("@([a-zA-Z]+)\\s*\\{\\s*([^,\\s]+)\\s*,([\\s\\S]*?)^\\s*}\\s*", Pattern.MULTILINE)
+      val m = entryPattern.matcher(text)
+      while (m.find()) {
+        val headerType = normalizeType(m.group(1).lowercase())
+        val key = m.group(2)
+        val body = m.group(3)
+        val fields = parseFields(body)
+        val subtype = fields["entrysubtype"]?.trim()?.lowercase()
+        val effective = if (headerType == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else headerType
+        entries.add(BibEntry(effective, key, fields))
+      }
+      entries
+    } catch (t: Throwable) {
+      log.warn("Failed to parse BibTeX text", t)
+      emptyList()
+    }
+  }
+
+  // Serialize a single entry using alphanumeric field order; values escaped.
+  fun serializeEntryAlpha(entry: BibEntry): String {
+    val keys = entry.fields.keys.map { it.trim() }.filter { it.isNotEmpty() }.sorted()
+    val body = keys.joinToString(separator = ",\n") { k ->
+      val vRaw = entry.fields[k]?.trim().orEmpty()
+      val v = if (k.equals("year", true) && vRaw.isBlank()) "n.d." else vRaw
+      "  ${k} = {${escapeBraces(v)}}"
+    }
+    return "@${entry.type}{${entry.key},\n${body}\n}\n\n"
+  }
+
   private fun parseFields(body: String): Map<String, String> {
     val map = linkedMapOf<String, String>()
-    val fieldPattern = Pattern.compile("([a-zA-Z][a-zA-Z0-9_-]*)\\s*=\\s*(\\{([^}]*)\\}|\"([^\"]*)\")\\s*,?", Pattern.MULTILINE)
+    val fieldPattern = Pattern.compile(
+      "([a-zA-Z][a-zA-Z0-9_-]*)\\s*=\\s*(\\{([^}]*)\\}|\"([^\"]*)\")\\s*,?",
+      Pattern.MULTILINE
+    )
     val fm = fieldPattern.matcher(body)
     while (fm.find()) {
       val name = fm.group(1).lowercase()
-      val value = fm.group(3) ?: fm.group(4) ?: ""
-      map[name] = value.trim()
+      val raw = fm.group(3) ?: fm.group(4) ?: ""
+      map[name] = normalizeMultilineField(raw)
     }
     return map
+  }
+
+  // Collapse indentation/newline whitespace within BibTeX field values to a single space.
+  // This treats multi-line wrapped values as a single logical string while preserving content.
+  private fun normalizeMultilineField(raw: String): String {
+    if (raw.isEmpty()) return raw
+    // Normalize line endings then collapse any newline with surrounding horizontal whitespace to one space.
+    val unified = raw.replace("\r\n", "\n").replace('\r', '\n')
+    // Replace sequences like "\n      ", "  \n\t", or multiple newlines with a single space
+    val collapsed = unified.replace(Regex("[ \t]*\n+[ \t]*"), " ")
+    // Trim outer whitespace; do not collapse multiple spaces inside a single line beyond newline joins.
+    return collapsed.trim()
   }
 
   fun upsertEntry(entry: BibEntry): Boolean {
@@ -1405,7 +1453,8 @@ import java.io.ByteArrayInputStream
 
   fun importFromPdfUrl(url: String, preferredKey: String? = null): BibEntry? {
     return try {
-      val bytes = HttpUtil.getBytes(url, accept = "application/pdf", aliases = arrayOf("pdf", java.net.URL(url).host)) ?: return null
+      val host = try { java.net.URI(url).host } catch (_: Throwable) { null }
+      val bytes = HttpUtil.getBytes(url, accept = "application/pdf", aliases = arrayOf("pdf") + (if (host != null) arrayOf(host) else emptyArray())) ?: return null
       PdfboxCompat.loadFromBytes(bytes).use { doc ->
         // Try XMP / document info first
         val info = doc.documentInformation
@@ -1560,7 +1609,7 @@ import java.io.ByteArrayInputStream
     for (k in req) {
       val v = entry.fields[k]?.trim().orEmpty()
       if (v.isEmpty()) return false
-      if (k == "year" && !v.matches(Regex("\\d{4}"))) return false
+      if (k == "year" && !v.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) return false
     }
     return true
   }

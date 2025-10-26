@@ -29,6 +29,7 @@ LaTeX Tools + Preview (IntelliJ Plugin)
 - `make test` — run tests
 - `make build` — build plugin ZIP under `intellij-latex-plugin/build/distributions/`
 - `make run` — launch sandbox IDE
+- `make runIde` — same as `make run`; launches the sandbox IDE with plugin auto‑reload enabled
 - `make verify` — run `verifyPlugin` compatibility checks
 - `make clean` — clean outputs
 - `make wrapper` — generate Gradle wrapper in plugin dir (uses system Gradle)

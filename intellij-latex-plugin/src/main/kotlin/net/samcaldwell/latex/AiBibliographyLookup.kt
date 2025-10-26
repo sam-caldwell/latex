@@ -13,7 +13,7 @@ object AiBibliographyLookup {
   )
 
   fun isAiAvailable(): Boolean =
-    possiblePluginIds.any { id -> PluginManagerCore.isPluginInstalled(PluginId.getId(id)) }
+    possiblePluginIds.any { pid -> PluginManagerCore.getPlugin(PluginId.getId(pid)) != null }
 
   // Best-effort: attempt to use JetBrains AI Assistant if a public API is present.
   // Falls back to null (caller will use Crossref/DOI logic).

@@ -97,7 +97,7 @@ class EntryDetailDialog(
   // Citation preview controls
   private val formatCombo = JComboBox(arrayOf("APA 7", "MLA", "Chicago", "IEEE"))
   private val copyCitationBtn = JButton("Copy Citation")
-  private val previewArea = JTextArea().apply { isEditable = false; lineWrap = true; wrapStyleWord = true; rows = 3 }
+  private val previewArea = JTextArea().apply { isEditable = false; lineWrap = true; wrapStyleWord = true; rows = 4 }
   private val defaultBorders = mutableMapOf<JComponent, javax.swing.border.Border?>()
   private fun trackBorder(c: JComponent) { defaultBorders.putIfAbsent(c, c.border) }
 
@@ -145,6 +145,23 @@ class EntryDetailDialog(
     copyCitationBtn.addActionListener { copyCurrentCitation() }
     lookupBtn.addActionListener { performLookup() }
     init()
+  }
+
+  private fun adjustDoiFieldWidth() {
+    try {
+      val fm = doiField.getFontMetrics(doiField.font)
+      // Representative samples: ISBN-13 with hyphens and a reasonably long DOI
+      val isbnSample = "978-1-23456-789-7"
+      val doiSample = "10.12345/abcdefghijklmnopqrstuvwxyz1234"
+      val w = kotlin.math.max(fm.stringWidth(isbnSample), fm.stringWidth(doiSample)) + 16 // padding for borders/caret
+      val h = doiField.preferredSize.height
+      val dim = java.awt.Dimension(w, h)
+      doiField.preferredSize = dim
+      doiField.minimumSize = dim
+    } catch (_: Throwable) {
+      // Fallback to a sensible column width if metrics are unavailable
+      doiField.columns = 36
+    }
   }
 
   private fun performLookup() {
@@ -509,7 +526,9 @@ class EntryDetailDialog(
       form.add(copyCitationBtn, bc)
       row++
       val fcPrev = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,6,6,6) }
-      form.add(JScrollPane(previewArea), fcPrev)
+      val minH = try { previewArea.getFontMetrics(previewArea.font).height * 4 + 8 } catch (_: Throwable) { 4 * 16 + 8 }
+      val prevScroll = JScrollPane(previewArea).apply { minimumSize = java.awt.Dimension(0, minH) }
+      form.add(prevScroll, fcPrev)
       row++
     }
     // Wrap form to pin it to the top-left of the dialog
@@ -526,6 +545,8 @@ class EntryDetailDialog(
     // Now that components exist, update visibility/labels and preview
     updateContextLabels()
     updateCitationPreview()
+    // Ensure DOI/ISBN field is wide enough for typical ISBN/DOI values
+    adjustDoiFieldWidth()
     return container
   }
 
@@ -539,7 +560,7 @@ class EntryDetailDialog(
       if (yearTxt.isEmpty() && dateField.text.trim().isNotEmpty()) {
         Regex("(19|20)\\d{2}").find(dateField.text)?.value?.let { y -> yearTxt = y; yearField.text = y }
       }
-      if (!yearTxt.matches(Regex("\\d{4}"))) errs += "Year is required (4 digits)"
+      if (!yearTxt.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) errs += "Year is required (4 digits or n.d.)"
       val vol = reporterVolumeField.text.trim()
       val rep = reporterAbbrevField.text.trim()
       val first = firstPageField.text.trim()
@@ -568,9 +589,9 @@ class EntryDetailDialog(
       if (id.isEmpty() || id.none { it.isDigit() }) errs += "Patent identifier must contain digits"
       // Year can be derived from Date if missing
       val y = yearField.text.trim()
-      if (!y.matches(Regex("\\d{4}"))) {
+      if (!y.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) {
         Regex("(19|20)\\d{2}").find(dateField.text)?.value?.let { yearField.text = it }
-        if (!yearField.text.matches(Regex("\\d{4}"))) errs += "Year is required (4 digits)"
+        if (!yearField.text.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) errs += "Year is required (4 digits or n.d.)"
       }
       if (errs.isNotEmpty()) {
         Messages.showErrorDialog(project, errs.joinToString("\n"), "Patent Reference")
