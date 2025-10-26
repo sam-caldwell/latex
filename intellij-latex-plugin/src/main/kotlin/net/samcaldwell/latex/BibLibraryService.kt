@@ -21,8 +21,8 @@ import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
 
-@Service(Service.Level.PROJECT)
-class BibLibraryService(private val project: Project) {
+  @Service(Service.Level.PROJECT)
+  class BibLibraryService(private val project: Project) {
   private val log = Logger.getInstance(BibLibraryService::class.java)
 
   fun libraryPath(): Path? {
@@ -69,6 +69,108 @@ class BibLibraryService(private val project: Project) {
     val key: String,
     val fields: Map<String, String>
   )
+
+  enum class Severity { ERROR, WARNING }
+  data class ValidationIssue(val field: String, val message: String, val severity: Severity)
+
+  fun validateEntryDetailed(entry: BibEntry): List<ValidationIssue> {
+    val issues = mutableListOf<ValidationIssue>()
+    val t = entry.type.trim().lowercase()
+    val f = entry.fields
+
+    fun err(field: String, msg: String) { issues += ValidationIssue(field, msg, Severity.ERROR) }
+    fun warn(field: String, msg: String) { issues += ValidationIssue(field, msg, Severity.WARNING) }
+
+    fun has(k: String) = f[k]?.trim().orEmpty().isNotEmpty()
+    fun valOf(k: String) = f[k]?.trim().orEmpty()
+
+    val required: Set<String> = when (t) {
+      "article" -> setOf("author", "title", "journal", "year")
+      "book" -> setOf("author", "title", "publisher", "year")
+      "inproceedings", "conference paper" -> setOf("author", "title", "year")
+      "thesis", "thesis (or dissertation)" -> setOf("author", "title", "year", "publisher")
+      "report" -> setOf("author", "title", "year", "publisher")
+      "website" -> setOf("title", "publisher", "url")
+      "patent" -> setOf("author", "title", "year", "publisher")
+      "court case" -> setOf("title", "year")
+      else -> setOf("title")
+    }
+
+    for (k in required) if (!has(k)) err(k, "Missing required field: $k")
+
+    val y = valOf("year")
+    if (y.isNotEmpty() && !y.matches(Regex("\\d{4}"))) err("year", "Year must be 4 digits")
+
+    run {
+      val doi = valOf("doi"); val isbn = valOf("isbn"); val idVal = if (t == "book") isbn else doi
+      if (t == "book") {
+        if (idVal.isNotEmpty() && !isValidIsbn(idVal)) err("isbn", "Invalid ISBN format/checksum")
+      } else if (t == "patent") {
+        if (doi.isNotEmpty() && doi.none { it.isDigit() }) err("doi", "Patent identifier must contain digits")
+      } else {
+        if (idVal.isNotEmpty() && !isValidDoi(idVal)) err("doi", "Invalid DOI format")
+      }
+    }
+
+    val url = valOf("url")
+    if (url.isNotEmpty()) {
+      val ok = try { (url.startsWith("http://") || url.startsWith("https://")) && java.net.URI(url).isAbsolute } catch (_: Throwable) { false }
+      if (!ok) err("url", "URL must start with http:// or https://")
+    }
+
+    val auth = valOf("author")
+    if (auth.isNotEmpty()) {
+      val parts = auth.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
+      for (p in parts) {
+        val isCorporate = p.startsWith("{") && p.endsWith("}")
+        val hasComma = p.contains(',')
+        if (!isCorporate && !hasComma) warn("author", "Author '$p' should be 'Family, Given' or wrapped in { } for corporate names")
+      }
+    }
+
+    fun misspelled(text: String): List<String> = try { SpellcheckUtil.misspelledWords(project, text) } catch (_: Throwable) { emptyList() }
+    fun checkSpell(field: String) {
+      val v = valOf(field)
+      if (v.isEmpty()) return
+      val miss = misspelled(v)
+      if (miss.isNotEmpty()) warn(field, "Possible spelling issues: ${miss.take(5).joinToString(", ")}${if (miss.size > 5) ", …" else ""}")
+    }
+    checkSpell("title"); checkSpell("journal"); checkSpell("publisher"); checkSpell("abstract");
+
+    return issues
+  }
+
+  private fun isValidDoi(s: String): Boolean = s.trim().matches(Regex("(?i)^10\\.\\S+/.+"))
+  private fun isValidIsbn(raw: String): Boolean {
+    val s = raw.uppercase().replace("[^0-9X]".toRegex(), "")
+    return when (s.length) {
+      10 -> isValidIsbn10(s)
+      13 -> isValidIsbn13(s)
+      else -> false
+    }
+  }
+  private fun isValidIsbn10(s: String): Boolean {
+    if (s.length != 10) return false
+    var sum = 0
+    for (i in 0 until 9) {
+      val c = s[i]
+      if (!c.isDigit()) return false
+      sum += (10 - i) * (c - '0')
+    }
+    val last = s[9]
+    sum += if (last == 'X') 10 else if (last.isDigit()) (last - '0') else return false
+    return sum % 11 == 0
+  }
+  private fun isValidIsbn13(s: String): Boolean {
+    if (s.length != 13 || s.any { !it.isDigit() }) return false
+    var sum = 0
+    for (i in 0 until 12) {
+      val d = s[i] - '0'
+      sum += if (i % 2 == 0) d else d * 3
+    }
+    val check = (10 - (sum % 10)) % 10
+    return check == (s[12] - '0')
+  }
 
   // --- Citation formatting (APA-like) -------------------------------------
 
@@ -898,6 +1000,11 @@ class BibLibraryService(private val project: Project) {
   fun upsertEntry(entry: BibEntry): Boolean {
     val path = ensureLibraryExists() ?: return false
     return try {
+      // Validate before write (non-blocking): log errors but do not reject writes here.
+      val issues = validateEntryDetailed(entry)
+      if (issues.any { it.severity == Severity.ERROR }) {
+        log.warn("Validation issues for ${entry.type}:{${entry.key}}: " + issues.filter { it.severity == Severity.ERROR }.joinToString("; ") { it.field + ": " + it.message })
+      }
       val original = Files.readString(path)
       val normalizedType = normalizeType(entry.type.trim().lowercase())
       val key = entry.key.trim()
@@ -992,6 +1099,14 @@ class BibLibraryService(private val project: Project) {
     } else null
   }
 
+  // Perform a DOI lookup via doi.org without writing; returns parsed entry or null.
+  fun lookupEntryByDoiOrUrl(identifier: String): BibEntry? {
+    val doi = extractDoi(identifier.trim()) ?: return null
+    val bibtex = fetchBibtexForDoi(doi) ?: return null
+    val parsed = parseSingleEntry(bibtex) ?: return null
+    return parsed.copy(fields = parsed.fields + mapOf("source" to "automated (doi.org)", "verified" to "false"))
+  }
+
   fun importFromAny(input: String, preferredKey: String? = null): BibEntry? {
     val trimmed = input.trim()
     val settings = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LookupSettingsService::class.java)
@@ -1055,6 +1170,27 @@ class BibLibraryService(private val project: Project) {
     tryTmdbByTitle(trimmed)?.takeIf { isComplete(it) }?.let { return withPreferredKey(it, preferredKey) }
     tryMusicBrainz(title = trimmed, artist = null)?.takeIf { isComplete(it) }?.let { return withPreferredKey(it, preferredKey) }
 
+    return null
+  }
+
+  // Try providers in configured order for an ISBN; do not write; return first hit (even if partial)
+  fun lookupByIsbnCascade(isbnRaw: String): BibEntry? {
+    val isbn = extractIsbn(isbnRaw.trim()) ?: return null
+    val settings = com.intellij.openapi.application.ApplicationManager.getApplication().getService(LookupSettingsService::class.java)
+    val providers = settings.providersForQuery(true)
+    for (p in providers) {
+      val e = when (p) {
+        LookupSettingsService.PROVIDER_OPENLIBRARY -> tryOpenLibraryByIsbn(isbn)
+        LookupSettingsService.PROVIDER_GOOGLEBOOKS -> tryGoogleBooksByIsbn(isbn)
+        LookupSettingsService.PROVIDER_CROSSREF -> tryCrossrefByIsbn(isbn)
+        LookupSettingsService.PROVIDER_WORLDCAT -> tryWorldCatByIsbn(isbn)
+        LookupSettingsService.PROVIDER_BNB -> tryBnbByIsbn(isbn)
+        LookupSettingsService.PROVIDER_OPENBD -> tryOpenBdByIsbn(isbn)
+        LookupSettingsService.PROVIDER_LOC -> tryLocByIsbn(isbn)
+        else -> null
+      }
+      if (e != null) return e
+    }
     return null
   }
 

@@ -19,23 +19,15 @@ class EntryDetailDialog(
 ) : DialogWrapper(project, true) {
   private val typeField = JComboBox(CitationTypes.array())
   private val titleField = JTextField()
-  // Structured author editor (similar to main form)
+  // Authors editor: unified list; items are display strings.
   private data class AuthorName(val family: String, val given: String)
   private val authorFamilyField = JTextField()
   private val authorGivenField = JTextField()
-  private val authorsModel = DefaultListModel<AuthorName>()
+  private val authorSingleField = JTextField()
+  private val authorsModel = DefaultListModel<String>()
   private val authorsList = JList(authorsModel).apply {
     visibleRowCount = 6
     selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
-    cellRenderer = object : DefaultListCellRenderer() {
-      override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
-        val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as JLabel
-        if (value is AuthorName) {
-          c.text = if (value.given.isNotBlank()) "${value.family}, ${value.given}" else value.family
-        }
-        return c
-      }
-    }
   }
   private val yearField = JTextField().apply { columns = 4 }
   private val dateField = JTextField()
@@ -47,7 +39,13 @@ class EntryDetailDialog(
   }
   private val journalField = JTextField()
   private val publisherField = JTextField()
-  private val doiField = JTextField().apply { columns = 28 }
+  private val volumeField = JTextField().apply { columns = 4 }
+  private val issueField = JTextField().apply { columns = 4 }
+  private val pagesField = JTextField().apply { columns = 8 }
+  private val doiField = JTextField().apply { columns = 21 }
+  private val lookupBtn = JButton("Lookup").apply {
+    toolTipText = "Lookup metadata by DOI/ISBN (OpenLibrary → Google Books → Crossref → WorldCat → BNB → openBD → LOC)"
+  }
   private val urlField = JTextField()
   private val abstractArea = JTextArea().apply { lineWrap = true; wrapStyleWord = true; rows = 6 }
   // Court case specific fields
@@ -64,6 +62,13 @@ class EntryDetailDialog(
     visibleRowCount = 6
     selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
   }
+  private fun sortKeywordsModel() {
+    val items = mutableListOf<String>()
+    for (i in 0 until keywordsModel.size()) items += keywordsModel.getElementAt(i)
+    items.sortWith(compareBy<String> { it.lowercase() }.thenBy { it })
+    keywordsModel.clear()
+    items.forEach { keywordsModel.addElement(it) }
+  }
   private val sourceField = JTextField()
   private val verifiedCheck = JCheckBox()
   private val verifiedByField = JTextField()
@@ -74,6 +79,9 @@ class EntryDetailDialog(
   private val authorsListLabel = JLabel("Authors")
   private val publisherLabel = JLabel("Publisher")
   private val journalLabel = JLabel("Journal")
+  private val volumeLabel = JLabel("vol.")
+  private val issueLabel = JLabel("iss.")
+  private val pagesLabel = JLabel("pgs.")
   private val idLabel = JLabel("DOI/ISBN")
   private val reporterVolumeLabel = JLabel("Volume")
   private val reporterAbbrevLabel = JLabel("Reporter")
@@ -82,18 +90,10 @@ class EntryDetailDialog(
   private val docketNumberLabel = JLabel("Docket No.")
   private val wlCiteLabel = JLabel("WL/Lexis")
   private val corporateCheck = JCheckBox("Corporate Author")
-  private val corporateNameField = JTextField()
+  // Input mode toggle and container
   private lateinit var authorModeCards: JPanel
   private lateinit var authorModeLayout: java.awt.CardLayout
   private lateinit var authorsScrollRef: JScrollPane
-  private val corporateInputField = JTextField()
-  private val corporateNamesModel = DefaultListModel<String>()
-  private val corporateList = JList(corporateNamesModel).apply {
-    visibleRowCount = 6
-    selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
-  }
-  private val corporateListLabel = JLabel("Corporate Authors")
-  private lateinit var corporateScrollRef: JScrollPane
   // Citation preview controls
   private val formatCombo = JComboBox(arrayOf("APA 7", "MLA", "Chicago", "IEEE"))
   private val copyCitationBtn = JButton("Copy Citation")
@@ -133,7 +133,7 @@ class EntryDetailDialog(
         override fun changedUpdate(e: javax.swing.event.DocumentEvent) = updateCitationPreview()
       })
     }
-    listOf(titleField, yearField, dateField, journalField, publisherField, doiField, urlField, keywordInputField, verifiedByField, sourceField).forEach { it.onUserChange() }
+    listOf(titleField, yearField, dateField, journalField, volumeField, issueField, pagesField, publisherField, doiField, urlField, keywordInputField, verifiedByField, sourceField).forEach { it.onUserChange() }
     abstractArea.document.addDocumentListener(object : javax.swing.event.DocumentListener {
       override fun insertUpdate(e: javax.swing.event.DocumentEvent) = updateCitationPreview()
       override fun removeUpdate(e: javax.swing.event.DocumentEvent) = updateCitationPreview()
@@ -143,31 +143,76 @@ class EntryDetailDialog(
     corporateCheck.addActionListener { updateCitationPreview() }
     formatCombo.addActionListener { updateCitationPreview() }
     copyCitationBtn.addActionListener { copyCurrentCitation() }
+    lookupBtn.addActionListener { performLookup() }
     init()
+  }
+
+  private fun performLookup() {
+    val raw = doiField.text.trim()
+    if (raw.isEmpty()) {
+      Messages.showInfoMessage(project, "Enter a DOI or ISBN to look up.", "Lookup")
+      return
+    }
+    val tSel = (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase() ?: entry.type
+    val isIsbnMode = tSel == "book" || isValidIsbn(raw)
+    val titleBefore = titleField.text
+    lookupBtn.isEnabled = false
+    object : com.intellij.openapi.progress.Task.Backgroundable(project, "Looking up metadata", true) {
+      override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {
+        indicator.isIndeterminate = true
+        val res = try {
+          if (isIsbnMode) svc.lookupByIsbnCascade(raw) else svc.lookupEntryByDoiOrUrl(raw)
+        } catch (t: Throwable) { null }
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+          lookupBtn.isEnabled = true
+          if (res == null) {
+            Messages.showWarningDialog(project, "No metadata found for '${raw}'.", "Lookup")
+            return@invokeLater
+          }
+          // Merge fetched fields into current form; prefer fetched values
+          val mergedFields = entry.fields.toMutableMap().apply { putAll(res.fields) }
+          val viewEntry = BibLibraryService.BibEntry(
+            (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase() ?: res.type,
+            keyField.text.ifBlank { res.key },
+            mergedFields
+          )
+          initFieldsFrom(viewEntry)
+          // Keep the chosen type selection unchanged
+          typeField.selectedItem = tSel
+          updateContextLabels()
+          if (titleBefore.isBlank() && !viewEntry.fields["title"].isNullOrBlank()) titleField.caretPosition = 0
+        }
+      }
+    }.queue()
   }
 
   private fun initFieldsFrom(e: BibLibraryService.BibEntry) {
     typeField.selectedItem = e.type
     titleField.text = e.fields["title"] ?: e.fields["booktitle"] ?: ""
     keyField.text = e.key
-    // Populate authors or corporate names
+    // Populate authors list (unified). Detect corporate vs personal based on comma presence
     authorsModel.clear()
     val rawAuthor = (e.fields["author"] ?: "").trim()
     val parts = if (rawAuthor.isNotEmpty()) rawAuthor.split(Regex("""\s+and\s+""", RegexOption.IGNORE_CASE)).map { it.trim().trim('{','}') }.filter { it.isNotEmpty() } else emptyList()
     val isCorp = parts.isNotEmpty() && parts.all { !it.contains(',') }
     corporateCheck.isSelected = isCorp
     if (isCorp) {
-      corporateNamesModel.clear()
-      parts.forEach { corporateNamesModel.addElement(it) }
-      corporateNameField.text = ""
+      parts.forEach { authorsModel.addElement(it) }
+      authorSingleField.text = ""
     } else {
-      parseAuthors(rawAuthor).forEach { authorsModel.addElement(it) }
+      parseAuthors(rawAuthor).forEach { n ->
+        val s = if (n.given.isNotBlank()) "${n.family}, ${n.given}" else n.family
+        authorsModel.addElement(s)
+      }
       authorFamilyField.text = ""
       authorGivenField.text = ""
     }
     yearField.text = (e.fields["year"] ?: "").let { s -> Regex("""\b(\d{4})\b""").find(s)?.groupValues?.getOrNull(1) ?: "" }
     dateField.text = e.fields["date"] ?: ""
     journalField.text = e.fields["journal"] ?: ""
+    volumeField.text = e.fields["volume"] ?: ""
+    issueField.text = (e.fields["number"] ?: e.fields["issue"]) ?: ""
+    pagesField.text = e.fields["pages"] ?: ""
     publisherField.text = e.fields["publisher"] ?: ""
     // Court case fields
     reporterVolumeField.text = e.fields["reporter_volume"] ?: ""
@@ -188,6 +233,7 @@ class EntryDetailDialog(
     (e.fields["keywords"] ?: "").let { s ->
       if (s.isNotBlank()) s.split(Regex("""\s*[,;]\s*""")).map { it.trim() }.filter { it.isNotEmpty() }.forEach { keywordsModel.addElement(it) }
     }
+    sortKeywordsModel()
     keywordInputField.text = ""
     sourceField.text = sanitizeSource(e.fields["source"]) ?: ""
     verifiedCheck.isSelected = (e.fields["verified"] ?: "false").equals("true", true)
@@ -197,58 +243,61 @@ class EntryDetailDialog(
   }
 
   override fun createCenterPanel(): JComponent {
-    val panel = JPanel(GridBagLayout())
+    val form = JPanel(GridBagLayout())
     var row = 0
     fun addRow(label: String, comp: JComponent, columns: Int = 1) {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = columns }
-      panel.add(JLabel(label), lc)
-      panel.add(comp, fc)
+      form.add(JLabel(label), lc)
+      form.add(comp, fc)
       row++
     }
     // Title + Year + Key
     run {
       val lcTitle = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Title"), lcTitle)
+      form.add(JLabel("Title"), lcTitle)
       val fcTitle = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6) }
-      panel.add(titleField, fcTitle)
+      form.add(titleField, fcTitle)
       val lcYear = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Year"), lcYear)
+      form.add(JLabel("Year"), lcYear)
       val fcYear = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6) }
-      panel.add(yearField, fcYear)
+      form.add(yearField, fcYear)
       val lcKey = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Key"), lcKey)
+      form.add(JLabel("Key"), lcKey)
       val fcKey = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(keyField, fcKey)
+      form.add(keyField, fcKey)
       row++
     }
     addRow("Type", typeField, columns = 3)
     // Date row
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(dateLabel, lc)
+      form.add(dateLabel, lc)
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 3 }
-      panel.add(dateField, fc)
+      form.add(dateField, fc)
       row++
     }
     // Author input row: person vs corporate
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(authorLabel, lc)
+      form.add(authorLabel, lc)
       val personPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0))
       authorFamilyField.columns = 12
       authorGivenField.columns = 12
       val addBtn = JButton("+")
-      addBtn.addActionListener { addAuthorFromFields() }
+      addBtn.addActionListener { addAuthorFromInput() }
       personPanel.add(JLabel("Family:"))
       personPanel.add(authorFamilyField)
       personPanel.add(JLabel("Given:"))
       personPanel.add(authorGivenField)
       personPanel.add(addBtn)
       val corpPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0)).apply {
-        add(JLabel("Corporate Name"))
-        corporateNameField.columns = 24
-        add(corporateNameField)
+        add(JLabel("Author"))
+        authorSingleField.columns = 24
+        add(authorSingleField)
+        val addBtn2 = JButton("+")
+        addBtn2.addActionListener { addAuthorFromInput() }
+        add(addBtn2)
       }
       authorModeLayout = java.awt.CardLayout()
       authorModeCards = JPanel(authorModeLayout).apply {
@@ -256,25 +305,25 @@ class EntryDetailDialog(
         add(corpPanel, "corp")
       }
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(authorModeCards, fc)
+      form.add(authorModeCards, fc)
       val lcToggle = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(corporateCheck, lcToggle)
+      form.add(corporateCheck, lcToggle)
       row++
     }
     // Authors list + reordering
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
-      panel.add(authorsListLabel, lc)
+      form.add(authorsListLabel, lc)
       val scroll = JScrollPane(authorsList).apply { preferredSize = java.awt.Dimension(200, 120) }
       authorsScrollRef = scroll
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(scroll, fc)
+      form.add(scroll, fc)
       val buttons = JPanel(java.awt.GridLayout(2,1,4,4)).apply {
         val up = JButton(AllIcons.Actions.MoveUp); up.toolTipText = "Move up"; up.addActionListener { moveAuthorsUp() }; add(up)
         val dn = JButton(AllIcons.Actions.MoveDown); dn.toolTipText = "Move down"; dn.addActionListener { moveAuthorsDown() }; add(dn)
       }
       val bc = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
-      panel.add(buttons, bc)
+      form.add(buttons, bc)
       row++
       val popup = JPopupMenu().apply { val del = JMenuItem("Delete"); del.addActionListener { removeSelectedAuthors() }; add(del) }
       fun showPopup(e: java.awt.event.MouseEvent) {
@@ -291,106 +340,84 @@ class EntryDetailDialog(
         override fun mouseClicked(e: java.awt.event.MouseEvent) { if (e.clickCount == 2) editSelectedAuthor() }
       })
     }
-    // Corporate authors
-    run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(corporateListLabel, lc)
-      val input = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0))
-      corporateInputField.columns = 24
-      val addBtn = JButton("+")
-      addBtn.addActionListener { addCorporateFromField() }
-      input.add(corporateInputField)
-      input.add(addBtn)
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6) }
-      panel.add(input, fc)
-      row++
-      val scroll = JScrollPane(corporateList).apply { preferredSize = java.awt.Dimension(200, 100) }
-      corporateScrollRef = scroll
-      val fc2 = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(scroll, fc2)
-      val buttons = JPanel(java.awt.GridLayout(2,1,4,4)).apply {
-        val up = JButton(AllIcons.Actions.MoveUp); up.toolTipText = "Move up"; up.addActionListener { moveCorporateUp() }; add(up)
-        val dn = JButton(AllIcons.Actions.MoveDown); dn.toolTipText = "Move down"; dn.addActionListener { moveCorporateDown() }; add(dn)
-      }
-      val bc = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
-      panel.add(buttons, bc)
-      row++
-      val popup = JPopupMenu().apply { val del = JMenuItem("Delete"); del.addActionListener { removeSelectedCorporate() }; add(del) }
-      corporateList.addMouseListener(object : java.awt.event.MouseAdapter() {
-        private fun show(e: java.awt.event.MouseEvent) {
-          val idx = corporateList.locationToIndex(e.point)
-          if (idx >= 0) {
-            val sel = corporateList.selectedIndices.toSet(); if (idx !in sel) corporateList.selectedIndex = idx
-          }
-          popup.show(corporateList, e.x, e.y)
-        }
-        override fun mousePressed(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger || javax.swing.SwingUtilities.isRightMouseButton(e)) show(e) }
-        override fun mouseReleased(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger) show(e) }
-        override fun mouseClicked(e: java.awt.event.MouseEvent) { if (e.clickCount == 2) editSelectedCorporate() }
-      })
-    }
+    // Corporate authors dedicated section removed; unified authors list above is used
     // Court case: reporter info
     run {
       val lcRv = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(reporterVolumeLabel, lcRv)
+      form.add(reporterVolumeLabel, lcRv)
       val fcRv = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(reporterVolumeField, fcRv)
+      form.add(reporterVolumeField, fcRv)
       val lcRa = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(reporterAbbrevLabel, lcRa)
+      form.add(reporterAbbrevLabel, lcRa)
       val fcRa = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
-      panel.add(reporterAbbrevField, fcRa)
+      form.add(reporterAbbrevField, fcRa)
       row++
       val lcFp = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(firstPageLabel, lcFp)
+      form.add(firstPageLabel, lcFp)
       val fcFp = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(firstPageField, fcFp)
+      form.add(firstPageField, fcFp)
       val lcPin = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(pinpointLabel, lcPin)
+      form.add(pinpointLabel, lcPin)
       val fcPin = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(pinpointField, fcPin)
+      form.add(pinpointField, fcPin)
       row++
       val lcDock = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(docketNumberLabel, lcDock)
+      form.add(docketNumberLabel, lcDock)
       val fcDock = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(docketNumberField, fcDock)
+      form.add(docketNumberField, fcDock)
       val lcWl = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(wlCiteLabel, lcWl)
+      form.add(wlCiteLabel, lcWl)
       val fcWl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(wlCiteField, fcWl)
+      form.add(wlCiteField, fcWl)
       row++
     }
-    // Journal row
+    // Journal + (vol., iss., pgs.) + Publisher on the same row
     run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(journalLabel, lc)
-      panel.add(journalField, fc)
-      row++
-    }
-    run {
-      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(publisherLabel, lc)
-      panel.add(publisherField, fc)
+      val lcJournal = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      form.add(journalLabel, lcJournal)
+      val fcJournal = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.4 }
+      form.add(journalField, fcJournal)
+
+      val lcVol = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      form.add(volumeLabel, lcVol)
+      val fcVol = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      form.add(volumeField, fcVol)
+
+      val lcIss = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      form.add(issueLabel, lcIss)
+      val fcIss = GridBagConstraints().apply { gridx = 5; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      form.add(issueField, fcIss)
+
+      val lcPgs = GridBagConstraints().apply { gridx = 6; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      form.add(pagesLabel, lcPgs)
+      val fcPgs = GridBagConstraints().apply { gridx = 7; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      form.add(pagesField, fcPgs)
+
+      val lcPublisher = GridBagConstraints().apply { gridx = 8; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      form.add(publisherLabel, lcPublisher)
+      val fcPublisher = GridBagConstraints().apply { gridx = 9; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.6 }
+      form.add(publisherField, fcPublisher)
       row++
     }
     // DOI/ISBN + URL row
     run {
       val lcId = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(idLabel, lcId)
+      form.add(idLabel, lcId)
       val fcId = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
-      panel.add(doiField, fcId)
-      val lcUrl = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("URL"), lcUrl)
-      val fcUrl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
-      panel.add(urlField, fcUrl)
+      form.add(doiField, fcId)
+      val fcLookup = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,0,4,6); anchor = GridBagConstraints.WEST }
+      form.add(lookupBtn, fcLookup)
+      val lcUrl = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
+      form.add(JLabel("URL"), lcUrl)
+      val fcUrl = GridBagConstraints().apply { gridx = 4; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0 }
+      form.add(urlField, fcUrl)
       row++
     }
     addRow("Abstract", JScrollPane(abstractArea).apply { preferredSize = java.awt.Dimension(200, 120) }, columns = 3)
     // Keyword input + list
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Keywords"), lc)
+      form.add(JLabel("Keywords"), lc)
       val input = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0))
       keywordInputField.columns = 18
       val addBtn = JButton("+")
@@ -398,15 +425,15 @@ class EntryDetailDialog(
       input.add(keywordInputField)
       input.add(addBtn)
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(input, fc)
+      form.add(input, fc)
       row++
     }
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.NORTHWEST }
-      panel.add(JLabel("Keyword List"), lc)
+      form.add(JLabel("Keyword List"), lc)
       val scroll = JScrollPane(keywordsList).apply { preferredSize = java.awt.Dimension(200, 100) }
       val fc = GridBagConstraints().apply { gridx = 1; gridy = row; weightx = 1.0; fill = GridBagConstraints.BOTH; insets = Insets(4,6,4,6); gridwidth = 3 }
-      panel.add(scroll, fc)
+      form.add(scroll, fc)
       row++
       val popup = JPopupMenu().apply { val del = JMenuItem("Delete"); del.addActionListener { removeSelectedKeywords() }; add(del) }
       fun showPopup(e: java.awt.event.MouseEvent) {
@@ -428,17 +455,17 @@ class EntryDetailDialog(
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(8,6,2,6) }
       val header = JLabel("Metadata")
-      panel.add(header, lc); row++
+      form.add(header, lc); row++
       val sc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,6,6,6) }
-      panel.add(JSeparator(), sc); row++
+      form.add(JSeparator(), sc); row++
     }
     // Source + Verified + Verified By
     run {
       val lcSrc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Source"), lcSrc)
+      form.add(JLabel("Source"), lcSrc)
       sourceField.columns = 20
       val fcSrc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.NONE; weightx = 0.0 }
-      panel.add(sourceField, fcSrc)
+      form.add(sourceField, fcSrc)
 
       val verifyPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0)).apply {
         if (verifiedCheck.text.isNullOrBlank()) verifiedCheck.text = "Verified"
@@ -447,45 +474,56 @@ class EntryDetailDialog(
         add(verifiedByField)
       }
       val fcVerify = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 2 }
-      panel.add(verifyPanel, fcVerify)
+      form.add(verifyPanel, fcVerify)
       row++
     }
     // Created + Modified
     run {
       val lcCreated = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Created"), lcCreated)
+      form.add(JLabel("Created"), lcCreated)
       val fcCreated = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
-      panel.add(createdField, fcCreated)
+      form.add(createdField, fcCreated)
       val lcModified = GridBagConstraints().apply { gridx = 2; gridy = row; insets = Insets(4,12,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Modified"), lcModified)
+      form.add(JLabel("Modified"), lcModified)
       val fcModified = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,0,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 0.5 }
-      panel.add(modifiedField, fcModified)
+      form.add(modifiedField, fcModified)
       row++
     }
     // Toggle authors mode, border tracking, preview controls
     corporateCheck.addActionListener { updateAuthorModeVisibility() }
     updateAuthorModeVisibility()
-    listOf(titleField, yearField, dateField, publisherField, doiField, urlField, authorsList, corporateList,
+    listOf(titleField, yearField, dateField, publisherField, doiField, urlField, authorsList,
       reporterVolumeField, reporterAbbrevField, firstPageField, pinpointField, docketNumberField, wlCiteField
     ).forEach { trackBorder(it) }
     run {
       val sc = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(6,6,0,6) }
-      panel.add(JSeparator(), sc); row++
+      form.add(JSeparator(), sc); row++
       val lcFmt = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(JLabel("Format"), lcFmt)
+      form.add(JLabel("Format"), lcFmt)
       val fcFmt = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-      panel.add(formatCombo, fcFmt)
+      form.add(formatCombo, fcFmt)
       val bc = GridBagConstraints().apply { gridx = 3; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.EAST }
-      panel.add(copyCitationBtn, bc)
+      form.add(copyCitationBtn, bc)
       row++
       val fcPrev = GridBagConstraints().apply { gridx = 0; gridy = row; gridwidth = 4; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(0,6,6,6) }
-      panel.add(JScrollPane(previewArea), fcPrev)
+      form.add(JScrollPane(previewArea), fcPrev)
       row++
+    }
+    // Wrap form to pin it to the top-left of the dialog
+    val container = JPanel(java.awt.BorderLayout())
+    container.add(form, java.awt.BorderLayout.NORTH)
+    // Make the dialog 200px less wide by default
+    run {
+      val base = form.preferredSize
+      val baseWidth = if (base != null && base.width > 0) base.width else 800
+      val baseHeight = if (base != null && base.height > 0) base.height else 400
+      val newWidth = kotlin.math.max(400, baseWidth - 200)
+      container.preferredSize = java.awt.Dimension(newWidth, baseHeight)
     }
     // Now that components exist, update visibility/labels and preview
     updateContextLabels()
     updateCitationPreview()
-    return panel
+    return container
   }
 
   override fun doOKAction() {
@@ -519,7 +557,7 @@ class EntryDetailDialog(
     } else if (tSelLower == "patent") {
       val errs = mutableListOf<String>()
       if (titleField.text.trim().isEmpty()) errs += "Title is required"
-      val inventorsEmpty = if (corporateCheck.isSelected) corporateNamesModel.size() == 0 else authorsModel.size() == 0
+    val inventorsEmpty = authorsModel.size() == 0 && (if (corporateCheck.isSelected) authorSingleField.text.trim().isEmpty() else (authorFamilyField.text.trim().isEmpty() && authorGivenField.text.trim().isEmpty()))
       if (inventorsEmpty) errs += "At least one inventor is required"
       val issuer = publisherField.text.trim()
       if (issuer.isEmpty()) errs += "Issuing authority is required"
@@ -542,12 +580,11 @@ class EntryDetailDialog(
     fields["title"] = titleField.text.trim()
     fields["year"] = yearField.text.trim()
     // Authors
-    if (!corporateCheck.isSelected) {
-      collectAuthors().takeIf { it.isNotEmpty() }?.let { list ->
-        fields["author"] = list.joinToString(" and ") { n -> if (n.given.isNotBlank()) "${n.family}, ${n.given}" else n.family }
+    run {
+      val list = collectUnifiedAuthors()
+      if (list.isNotEmpty()) {
+        fields["author"] = if (corporateCheck.isSelected) list.joinToString(" and ") { "{$it}" } else list.joinToString(" and ")
       }
-    } else {
-      collectCorporate().takeIf { it.isNotEmpty() }?.let { list -> fields["author"] = list.joinToString(" and ") { "{$it}" } }
     }
     // Court case extras
     if (t == "court case") {
@@ -562,6 +599,9 @@ class EntryDetailDialog(
     }
     // Other fields
     journalField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["journal"] = it }
+    volumeField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["volume"] = it }
+    issueField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["number"] = it }
+    pagesField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["pages"] = it }
     publisherField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["publisher"] = it }
     val id = doiField.text.trim()
     if (id.isNotEmpty()) {
@@ -582,9 +622,52 @@ class EntryDetailDialog(
     }
     // Created/Modified unchanged here (handled by service)
 
+    val origType = entry.type
+    val origKey = entry.key
     val newKey = keyField.text.trim().ifEmpty { entry.key }
-    val saved = svc.upsertEntry(BibLibraryService.BibEntry(t, newKey, fields))
+
+    // Enforce unique keys across all types with merge policy
+    val all = svc.readEntries()
+    val conflicts = all.filter { it.key == newKey && !(it.type == origType && it.key == origKey) }
+    if (conflicts.isNotEmpty()) {
+      // Merge policy: prefer non-empty new values; keep existing where new is empty.
+      // Special-case keywords: union lists.
+      fun isBlank(v: String?): Boolean = v == null || v.trim().isEmpty()
+      // Merge fields from conflicting entries into current fields
+      val merged = fields.toMutableMap()
+      for (c in conflicts) {
+        for ((k, v) in c.fields) {
+          if (k.equals("keywords", true)) {
+            val cur = merged[k]?.trim().orEmpty()
+            val curSet = if (cur.isEmpty()) emptySet() else cur.split(Regex("\\s*[,;]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+            val addSet = if (v.isEmpty()) emptySet() else v.split(Regex("\\s*[,;]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            val union = (curSet + addSet).toList().sorted()
+            if (union.isNotEmpty()) merged[k] = union.joinToString(", ")
+          } else {
+            val cur = merged[k]
+            if (isBlank(cur) && !isBlank(v)) merged[k] = v
+          }
+        }
+      }
+      fields.clear(); fields.putAll(merged)
+    }
+
+    val candidate = BibLibraryService.BibEntry(t, newKey, fields)
+    val issues = svc.validateEntryDetailed(candidate)
+    val errors = issues.filter { it.severity == BibLibraryService.Severity.ERROR }
+    if (errors.isNotEmpty()) {
+      val msg = errors.joinToString("\n") { "- ${it.field}: ${it.message}" }
+      Messages.showErrorDialog(project, "Please fix the following before saving:\n\n$msg", "Citation Details")
+      return
+    }
+    val saved = svc.upsertEntry(candidate)
     if (saved) {
+      // Remove the original entry if type/key changed
+      if (t != origType || newKey != origKey) svc.deleteEntry(origType, origKey)
+      // Remove any other duplicates of the same key under different types
+      for (c in conflicts) {
+        if (c.type != t) svc.deleteEntry(c.type, c.key)
+      }
       super.doOKAction()
       onSaved()
     } else {
@@ -595,13 +678,8 @@ class EntryDetailDialog(
   private fun updateAuthorModeVisibility() {
     authorModeLayout.show(authorModeCards, if (corporateCheck.isSelected) "corp" else "person")
     authorsListLabel.text = if (corporateCheck.isSelected) "Corporate Authors" else "Authors"
-    if (corporateCheck.isSelected) {
-      authorsScrollRef.isVisible = false
-      if (::corporateScrollRef.isInitialized) corporateScrollRef.isVisible = true
-    } else {
-      authorsScrollRef.isVisible = true
-      if (::corporateScrollRef.isInitialized) corporateScrollRef.isVisible = false
-    }
+    // Single unified list is always visible; only input mode changes
+    authorsScrollRef.isVisible = true
   }
 
   private fun sanitizeSource(s: String?): String? {
@@ -623,16 +701,21 @@ class EntryDetailDialog(
     val fields = mutableMapOf<String, String>()
     fields["title"] = titleField.text.trim()
     val y = yearField.text.trim(); if (y.isNotEmpty()) fields["year"] = y
-    if (!corporateCheck.isSelected) {
-      collectAuthors().takeIf { it.isNotEmpty() }?.let { list ->
-        fields["author"] = list.joinToString(" and ") { n -> if (n.given.isNotBlank()) "${n.family}, ${n.given}" else n.family }
+    run {
+      val list = collectUnifiedAuthors()
+      if (list.isNotEmpty()) {
+        fields["author"] = if (corporateCheck.isSelected) list.joinToString(" and ") { "{$it}" } else list.joinToString(" and ")
       }
-    } else {
-      collectCorporate().takeIf { it.isNotEmpty() }?.let { list -> fields["author"] = list.joinToString(" and ") { "{$it}" } }
     }
     journalField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["journal"] = it }
+    volumeField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["volume"] = it }
+    issueField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["number"] = it }
+    pagesField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["pages"] = it }
     publisherField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["publisher"] = it }
-    val id = doiField.text.trim(); if (id.isNotEmpty()) fields["doi"] = id
+    val id = doiField.text.trim()
+    if (id.isNotEmpty()) {
+      if (typeSel == "book") fields["isbn"] = id else fields["doi"] = id
+    }
     urlField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["url"] = it }
     cleanupAbstract(abstractArea.text)?.takeIf { it.isNotEmpty() }?.let { fields["abstract"] = it }
     // Court case preview fields
@@ -676,7 +759,7 @@ class EntryDetailDialog(
 
   private fun clearPreviewHighlights() {
     fun reset(c: JComponent) { c.border = defaultBorders[c] }
-    listOf(titleField, yearField, dateField, publisherField, doiField, urlField, authorsList, corporateList,
+    listOf(titleField, yearField, dateField, publisherField, doiField, urlField, authorsList,
       reporterVolumeField, reporterAbbrevField, firstPageField, pinpointField, docketNumberField, wlCiteField
     ).forEach { reset(it) }
   }
@@ -744,7 +827,7 @@ class EntryDetailDialog(
       else -> emptySet()
     }
     val req = requiredFor(style, t)
-    if ("author" in req && !has("author")) { if (corporateCheck.isSelected) mark(corporateList) else mark(authorsList) }
+    if ("author" in req && !has("author")) { mark(authorsList) }
     if ("title" in req && !has("title")) mark(titleField)
     if ("year" in req) {
       val y = valOf("year"); if (!y.matches(Regex("\\d{4}"))) mark(yearField)
@@ -752,8 +835,21 @@ class EntryDetailDialog(
     if ("date" in req && !has("date")) mark(dateField)
     if ("journal" in req && !has("journal")) mark(journalField)
     if ("publisher" in req && !has("publisher")) mark(publisherField)
-    if ("doi" in req) {
-      val idVal = valOf("doi"); if (idVal.isEmpty() || (t == "patent" && idVal.none { it.isDigit() })) mark(doiField)
+    // Validate identifier (DOI/ISBN/Patent Id) whether required or provided
+    run {
+      val raw = valOf("doi").ifEmpty { valOf("isbn") }
+      val idVal = raw.trim()
+      val required = "doi" in req
+      if (idVal.isEmpty()) {
+        if (required) mark(doiField)
+      } else {
+        val ok = when (t) {
+          "book" -> isValidIsbn(idVal)
+          "patent" -> idVal.any { it.isDigit() }
+          else -> isValidDoi(idVal)
+        }
+        if (!ok) mark(doiField)
+      }
     }
     if ("url" in req) {
       val u = valOf("url")
@@ -766,6 +862,42 @@ class EntryDetailDialog(
         if (!ok) mark(urlField)
       }
     }
+  }
+
+  private fun isValidDoi(s: String): Boolean {
+    val v = s.trim()
+    // Basic Crossref-style DOI format validation
+    return v.matches(Regex("(?i)^10\\.\\S+/.+"))
+  }
+  private fun isValidIsbn(raw: String): Boolean {
+    val s = raw.uppercase().replace("[^0-9X]".toRegex(), "")
+    return when (s.length) {
+      10 -> isValidIsbn10(s)
+      13 -> isValidIsbn13(s)
+      else -> false
+    }
+  }
+  private fun isValidIsbn10(s: String): Boolean {
+    if (s.length != 10) return false
+    var sum = 0
+    for (i in 0 until 9) {
+      val c = s[i]
+      if (!c.isDigit()) return false
+      sum += (10 - i) * (c - '0')
+    }
+    val last = s[9]
+    sum += if (last == 'X') 10 else if (last.isDigit()) (last - '0') else return false
+    return sum % 11 == 0
+  }
+  private fun isValidIsbn13(s: String): Boolean {
+    if (s.length != 13 || s.any { !it.isDigit() }) return false
+    var sum = 0
+    for (i in 0 until 12) {
+      val d = s[i] - '0'
+      sum += if (i % 2 == 0) d else d * 3
+    }
+    val check = (10 - (sum % 10)) % 10
+    return check == (s[12] - '0')
   }
 
   private fun updateContextLabels() {
@@ -797,17 +929,22 @@ class EntryDetailDialog(
       else -> "Publisher"
     }
     idLabel.text = when (t) {
-      "book" -> "ISBN"
-      "article" -> "DOI"
       "patent" -> "Patent Identifier"
       else -> "DOI/ISBN"
     }
     val showId = t != "website" && t != "court case"
     idLabel.isVisible = showId
     doiField.isVisible = showId
+    lookupBtn.isVisible = showId
     val showJournal = t != "website" && t != "court case"
     journalLabel.isVisible = showJournal
     journalField.isVisible = showJournal
+    volumeLabel.isVisible = showJournal
+    volumeField.isVisible = showJournal
+    issueLabel.isVisible = showJournal
+    issueField.isVisible = showJournal
+    pagesLabel.isVisible = showJournal
+    pagesField.isVisible = showJournal
     val showDate = t == "patent" || t == "court case"
     dateLabel.isVisible = showDate
     dateField.isVisible = showDate
@@ -817,9 +954,7 @@ class EntryDetailDialog(
     authorModeCards.isVisible = !isCase
     authorsListLabel.isVisible = !isCase
     authorsScrollRef.isVisible = !isCase
-    corporateListLabel.isVisible = !isCase
-    if (::corporateScrollRef.isInitialized) corporateScrollRef.isVisible = !isCase
-    corporateInputField.isVisible = !isCase
+    // No separate corporate list/input; unified list always visible when not a court case
     corporateCheck.isVisible = !isCase
     reporterVolumeLabel.isVisible = isCase
     reporterVolumeField.isVisible = isCase
@@ -841,6 +976,7 @@ class EntryDetailDialog(
     keywordsModel.addElement(kw)
     keywordInputField.text = ""
     keywordInputField.requestFocusInWindow()
+    sortKeywordsModel()
   }
   private fun removeSelectedKeywords() {
     val idxs = keywordsList.selectedIndices
@@ -848,6 +984,7 @@ class EntryDetailDialog(
     for (i in idxs.sortedDescending()) {
       if (i >= 0 && i < keywordsModel.size()) keywordsModel.remove(i)
     }
+    sortKeywordsModel()
   }
   private fun editSelectedKeyword() {
     val i = keywordsList.selectedIndex
@@ -856,6 +993,7 @@ class EntryDetailDialog(
     keywordsModel.remove(i)
     keywordInputField.text = v
     keywordInputField.requestFocusInWindow()
+    sortKeywordsModel()
   }
 
   private fun collectKeywords(): List<String> {
@@ -866,40 +1004,20 @@ class EntryDetailDialog(
     return list.map { it.trim() }.filter { it.isNotEmpty() }
   }
 
-  // Corporate authors helpers
-  private fun addCorporateFromField() {
-    val v = corporateInputField.text.trim()
-    if (v.isEmpty()) return
-    corporateNamesModel.addElement(v)
-    corporateInputField.text = ""
-    corporateInputField.requestFocusInWindow()
-  }
-  private fun removeSelectedCorporate() {
-    val idxs = corporateList.selectedIndices
-    if (idxs == null || idxs.isEmpty()) return
-    for (i in idxs.sortedDescending()) {
-      if (i >= 0 && i < corporateNamesModel.size()) corporateNamesModel.remove(i)
-    }
-  }
-  private fun editSelectedCorporate() {
-    val i = corporateList.selectedIndex
-    if (i < 0) return
-    val v = corporateNamesModel.get(i)
-    corporateNamesModel.remove(i)
-    corporateInputField.text = v
-    corporateInputField.requestFocusInWindow()
-  }
-  private fun collectCorporate(): List<String> {
+  private fun collectUnifiedAuthors(): List<String> {
     val list = mutableListOf<String>()
-    for (i in 0 until corporateNamesModel.size()) list += corporateNamesModel.elementAt(i)
-    val pending = corporateInputField.text.trim()
-    if (pending.isNotEmpty()) list += pending
+    for (i in 0 until authorsModel.size()) list += authorsModel.elementAt(i)
+    if (corporateCheck.isSelected) {
+      val pending = authorSingleField.text.trim()
+      if (pending.isNotEmpty()) list += pending
+    } else {
+      val fam = authorFamilyField.text.trim(); val giv = authorGivenField.text.trim()
+      if (fam.isNotEmpty() || giv.isNotEmpty()) list += if (giv.isNotEmpty()) "$fam, $giv" else fam
+    }
     return list.map { it.trim() }.filter { it.isNotEmpty() }
   }
   private fun moveAuthorsUp() { moveUp(authorsList, authorsModel) }
   private fun moveAuthorsDown() { moveDown(authorsList, authorsModel) }
-  private fun moveCorporateUp() { moveUp(corporateList, corporateNamesModel) }
-  private fun moveCorporateDown() { moveDown(corporateList, corporateNamesModel) }
   private fun <T> moveUp(list: JList<*>, model: DefaultListModel<T>) {
     val idx = list.selectedIndex
     if (idx <= 0) return
@@ -917,15 +1035,24 @@ class EntryDetailDialog(
     list.selectedIndex = idx + 1
   }
 
-  // Structured authors helpers
-  private fun addAuthorFromFields() {
-    val fam = authorFamilyField.text.trim()
-    val giv = authorGivenField.text.trim()
-    if (fam.isEmpty() && giv.isEmpty()) return
-    authorsModel.addElement(AuthorName(fam, giv))
-    authorFamilyField.text = ""
-    authorGivenField.text = ""
-    authorFamilyField.requestFocusInWindow()
+  // Authors helpers
+  private fun addAuthorFromInput() {
+    if (corporateCheck.isSelected) {
+      val v = authorSingleField.text.trim()
+      if (v.isEmpty()) return
+      authorsModel.addElement(v)
+      authorSingleField.text = ""
+      authorSingleField.requestFocusInWindow()
+    } else {
+      val fam = authorFamilyField.text.trim()
+      val giv = authorGivenField.text.trim()
+      if (fam.isEmpty() && giv.isEmpty()) return
+      val s = if (giv.isNotEmpty()) "$fam, $giv" else fam
+      authorsModel.addElement(s)
+      authorFamilyField.text = ""
+      authorGivenField.text = ""
+      authorFamilyField.requestFocusInWindow()
+    }
   }
   private fun removeSelectedAuthors() {
     val idxs = authorsList.selectedIndices
@@ -937,11 +1064,28 @@ class EntryDetailDialog(
   private fun editSelectedAuthor() {
     val i = authorsList.selectedIndex
     if (i < 0) return
-    val n = authorsModel.get(i)
+    val v = authorsModel.get(i)
     authorsModel.remove(i)
-    authorFamilyField.text = n.family
-    authorGivenField.text = n.given
-    authorFamilyField.requestFocusInWindow()
+    if (corporateCheck.isSelected) {
+      authorSingleField.text = v
+      authorSingleField.requestFocusInWindow()
+    } else {
+      val idx = v.indexOf(',')
+      if (idx > 0) {
+        authorFamilyField.text = v.substring(0, idx).trim()
+        authorGivenField.text = v.substring(idx + 1).trim()
+      } else {
+        val tokens = v.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isNotEmpty()) {
+          authorFamilyField.text = tokens.last()
+          authorGivenField.text = tokens.dropLast(1).joinToString(" ")
+        } else {
+          authorFamilyField.text = ""
+          authorGivenField.text = ""
+        }
+      }
+      authorFamilyField.requestFocusInWindow()
+    }
   }
   private fun parseAuthors(s: String): List<AuthorName> {
     val parts = s.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
@@ -957,13 +1101,7 @@ class EntryDetailDialog(
       }
     }
   }
-  private fun collectAuthors(): List<AuthorName> {
-    val list = mutableListOf<AuthorName>()
-    for (i in 0 until authorsModel.size()) list += authorsModel.elementAt(i)
-    val fam = authorFamilyField.text.trim(); val giv = authorGivenField.text.trim()
-    if (fam.isNotEmpty() || giv.isNotEmpty()) list += AuthorName(fam, giv)
-    return list.filter { it.family.isNotBlank() || it.given.isNotBlank() }
-  }
+  // collectAuthors removed: unified authors handled by collectUnifiedAuthors()
 
   // Normalize abstract whitespace for clean display and wrapping
   private fun cleanupAbstract(raw: String?): String? {

@@ -34,7 +34,11 @@ class DependenciesConfigurable : Configurable {
     addRow(linuxPathUpdate)
   }
 
-  override fun createComponent(): JComponent = panel
+  override fun createComponent(): JComponent {
+    val wrapper = JPanel(java.awt.BorderLayout())
+    wrapper.add(panel, java.awt.BorderLayout.NORTH)
+    return wrapper
+  }
 
   override fun isModified(): Boolean {
     val st = state()

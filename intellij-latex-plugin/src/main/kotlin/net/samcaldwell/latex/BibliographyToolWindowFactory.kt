@@ -1313,6 +1313,23 @@ private fun currentUserName(): String {
       val col = columnAtPoint(event.point)
       return if (row >= 0 && col == 0) "Open details" else null
     }
+    override fun prepareRenderer(renderer: javax.swing.table.TableCellRenderer, row: Int, column: Int): java.awt.Component {
+      val c = super.prepareRenderer(renderer, row, column)
+      // Highlight entire row on hover when not selected
+      val isHoverRow = row == hoverRow
+      if (!isRowSelected(row) && isHoverRow) {
+        if (c is JComponent) {
+          c.background = java.awt.Color(0xE3F2FD)
+          c.isOpaque = true
+        }
+      } else {
+        if (c is JComponent) {
+          c.background = if (isRowSelected(row)) selectionBackground else background
+          c.isOpaque = true
+        }
+      }
+      return c
+    }
   }
   private val sorter = TableRowSorter<BrowserTableModel>(model)
   private val searchField = JTextField()
@@ -1374,11 +1391,14 @@ private fun currentUserName(): String {
       }
     })
 
-    // Build type filter options
-    val allTypes = linkedSetOf("All")
-    model.rows.map { it.currentType }.toCollection(allTypes)
-    typeFilter.model = DefaultComboBoxModel(allTypes.toTypedArray())
-    typeFilter.selectedItem = "All"
+    // Build type filter options from standardized types (include all), plus All
+    run {
+      val types = mutableListOf<String>()
+      types += "All"
+      types += CitationTypes.array()
+      typeFilter.model = DefaultComboBoxModel(types.toTypedArray())
+      typeFilter.selectedItem = "All"
+    }
     typeFilter.addActionListener { applyFilter() }
 
     searchField.columns = 18
@@ -1476,12 +1496,60 @@ private fun currentUserName(): String {
 
   private fun refresh() {
     model.setEntries(loadEntries())
-    // Update filter choices
-    val allTypes = linkedSetOf("All")
-    model.rows.map { it.currentType }.toCollection(allTypes)
-    typeFilter.model = DefaultComboBoxModel(allTypes.toTypedArray())
+    // Recompute validation and set renderers
+    installValidationRenderers()
+    // Update filter choices using standardized types list (stable ordering)
+    run {
+      val types = mutableListOf<String>()
+      types += "All"
+      types += CitationTypes.array()
+      typeFilter.model = DefaultComboBoxModel(types.toTypedArray())
+    }
     applyFilter()
     updateCancelButtonLabel()
+  }
+
+  private fun installValidationRenderers() {
+    val baseRenderer = object : javax.swing.table.DefaultTableCellRenderer() {
+      override fun getTableCellRendererComponent(table: JTable?, value: Any?, isSelected: Boolean, hasFocus: Boolean, row: Int, column: Int): java.awt.Component {
+        val c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column) as JLabel
+        if (table == null) return c
+        val modelRow = table.convertRowIndexToModel(row)
+        val r = model.rows.getOrNull(modelRow) ?: return c
+        val full = loadEntry(r.originalType, r.key)
+        if (full != null) {
+          val issues = computeIssuesMapFor(full)
+          val field = when (column) {
+            0 -> "key"
+            1 -> "type"
+            2 -> "title"
+            3 -> "author"
+            4 -> "year"
+            5 -> "journal"
+            6 -> "publisher"
+            7 -> if (full.type.equals("book", true)) "isbn" else "doi"
+            8 -> "url"
+            else -> null
+          }
+          if (field != null) {
+            val list = issues[field] ?: emptyList()
+            val probs = list.filter { it.severity == BibLibraryService.Severity.ERROR }
+            if (probs.isNotEmpty() && !isSelected) {
+              c.foreground = java.awt.Color(0xD32F2F)
+              c.toolTipText = probs.joinToString("; ") { it.message }
+            } else if (!isSelected) {
+              c.toolTipText = null
+            }
+          }
+        }
+        return c
+      }
+    }
+    // Apply renderer for most columns except the Key (which has a custom link renderer) and Verified (boolean)
+    for (col in 1..8) {
+      if (col == 0 || col == 9) continue
+      table.columnModel.getColumn(col).cellRenderer = baseRenderer
+    }
   }
 
   private fun applyFilter() {
@@ -1508,38 +1576,79 @@ private fun currentUserName(): String {
   }
 
   private fun saveChanges() {
-    // Merge edits back into service while preserving unknown fields
-    val current = svc.readEntries().associateBy { it.type + "\u0000" + it.key }
-    var okAll = true
-    for (row in model.rows) {
-      if (!row.dirty) continue
-      val orig = current[row.originalType + "\u0000" + row.key]
-      val baseFields = orig?.fields?.toMutableMap() ?: mutableMapOf()
-      fun setOrRemove(k: String, v: String?) {
-        if (v.isNullOrBlank()) baseFields.remove(k) else baseFields[k] = v
+    // Show modal progress dialog titled "Saving"; run IO off the EDT
+    val okAllHolder = java.util.concurrent.atomic.AtomicBoolean(true)
+    com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously({
+      val indicator = com.intellij.openapi.progress.ProgressManager.getInstance().progressIndicator
+      if (indicator != null) {
+        indicator.isIndeterminate = true
+        indicator.text = "Saving"
       }
-      setOrRemove("author", row.author)
-      setOrRemove("title", row.title)
-      setOrRemove("year", row.year)
-      setOrRemove("journal", row.journal)
-      setOrRemove("publisher", row.publisher)
-      setOrRemove("doi", row.doi)
-      setOrRemove("url", row.url)
-      if (row.verified != null) {
-        baseFields["verified"] = if (row.verified == true) "true" else "false"
-        if (row.verified == true) {
-          val vb = row.verifiedBy.trim()
-          baseFields["verified_by"] = if (vb.isNotEmpty()) vb else currentUserName()
-        } else {
-          baseFields.remove("verified_by")
+      // Merge edits back into service while preserving unknown fields
+      val currentByTypeKey = svc.readEntries().associateBy { it.type + "\u0000" + it.key }
+      var okAll = true
+      for (row in model.rows) {
+        if (!row.dirty) continue
+        val orig = currentByTypeKey[row.originalType + "\u0000" + row.key]
+        val baseFields = orig?.fields?.toMutableMap() ?: mutableMapOf()
+        fun setOrRemove(k: String, v: String?) {
+          if (v.isNullOrBlank()) baseFields.remove(k) else baseFields[k] = v
         }
+        setOrRemove("author", row.author)
+        setOrRemove("title", row.title)
+        setOrRemove("year", row.year)
+        setOrRemove("journal", row.journal)
+        setOrRemove("publisher", row.publisher)
+        setOrRemove("doi", row.doi)
+        setOrRemove("url", row.url)
+        if (row.verified != null) {
+          baseFields["verified"] = if (row.verified == true) "true" else "false"
+          if (row.verified == true) {
+            val vb = row.verifiedBy.trim()
+            baseFields["verified_by"] = if (vb.isNotEmpty()) vb else currentUserName()
+          } else {
+            baseFields.remove("verified_by")
+          }
+        }
+        // Preserve source; if missing, mark as manual
+        baseFields.putIfAbsent("source", "manual")
+        // Enforce unique keys across types: merge with any existing conflicts under other types
+        run {
+          val all = svc.readEntries()
+          val conflicts = all.filter { it.key == row.key && !(it.type == row.originalType && it.key == row.key) }
+          if (conflicts.isNotEmpty()) {
+            for (c in conflicts) {
+              for ((k, v) in c.fields) {
+                if (k.equals("keywords", true)) {
+                  val cur = baseFields[k]?.trim().orEmpty()
+                  val curSet = if (cur.isEmpty()) emptySet() else cur.split(Regex("\\s*[,;]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+                  val addSet = if (v.isEmpty()) emptySet() else v.split(Regex("\\s*[,;]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                  val union = (curSet + addSet).toList().sorted()
+                  if (union.isNotEmpty()) baseFields[k] = union.joinToString(", ")
+                } else {
+                  val cur = baseFields[k]
+                  if (cur.isNullOrBlank() && !v.isNullOrBlank()) baseFields[k] = v
+                }
+              }
+            }
+          }
+        }
+        val saved = svc.upsertEntry(BibLibraryService.BibEntry(row.currentType, row.key, baseFields))
+        okAll = okAll && saved
+        if (saved) {
+          // Delete original if type changed; remove other conflicts with same key under different types
+          if (row.currentType != row.originalType) svc.deleteEntry(row.originalType, row.key)
+          val all = svc.readEntries()
+          for (c in all) {
+            if (c.key == row.key && c.type != row.currentType) svc.deleteEntry(c.type, c.key)
+          }
+        }
+        row.commit()
       }
-      // Preserve source; if missing, mark as manual
-      baseFields.putIfAbsent("source", "manual")
-      val saved = svc.upsertEntry(BibLibraryService.BibEntry(row.currentType, row.key, baseFields))
-      okAll = okAll && saved
-      row.commit()
-    }
+      okAllHolder.set(okAll)
+    }, "Saving", false, project)
+    // After modal closes, update UI
+    val okAll = okAllHolder.get()
     if (!okAll) Messages.showWarningDialog(project, "Some rows failed to save.", "Bibliography") else refresh()
     updateCancelButtonLabel()
   }
@@ -1645,6 +1754,14 @@ private fun currentUserName(): String {
     }
 
     fun commit() { dirty = false }
+  }
+
+  // Validation cache for table rendering
+  private fun computeIssuesMapFor(entry: BibLibraryService.BibEntry): Map<String, List<BibLibraryService.ValidationIssue>> {
+    val issues = svc.validateEntryDetailed(entry)
+    val map = mutableMapOf<String, MutableList<BibLibraryService.ValidationIssue>>()
+    for (i in issues) map.computeIfAbsent(i.field) { mutableListOf() }.add(i)
+    return map
   }
 
   // Detail editor dialog moved to top-level class; keeping nested copy renamed for reference.

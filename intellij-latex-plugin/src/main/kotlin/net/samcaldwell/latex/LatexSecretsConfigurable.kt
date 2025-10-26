@@ -90,7 +90,11 @@ class LatexSecretsConfigurable : Configurable {
     addRow("Generic API Token for Host (stored as token.<host>)", genTokPanel)
   }
 
-  override fun createComponent(): JComponent = panel
+  override fun createComponent(): JComponent {
+    val wrapper = JPanel(java.awt.BorderLayout())
+    wrapper.add(panel, java.awt.BorderLayout.NORTH)
+    return wrapper
+  }
   override fun isModified(): Boolean {
     val svc = ApplicationManager.getApplication().getService(LatexSecretsService::class.java)
     val savedDoi = svc.getSecret(DOI_TOKEN_KEY) ?: ""
