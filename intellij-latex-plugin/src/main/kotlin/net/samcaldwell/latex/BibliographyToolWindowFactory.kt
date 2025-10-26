@@ -341,7 +341,9 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           bak.toFile().setWritable(false)
           com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(bak.toFile())?.let { vBak ->
             vBak.refresh(false, false)
-            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vBak, true)
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+              com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vBak, true)
+            }
           }
         } catch (_: Throwable) { }
 
@@ -499,7 +501,9 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         try {
           com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.let { vFile ->
             vFile.refresh(false, false)
-            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vFile, true)
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+              com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(vFile, true)
+            }
           }
         } catch (_: Throwable) { }
 
