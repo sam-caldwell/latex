@@ -253,6 +253,20 @@ class BibHighlightingLexer : LexerBase() {
         }
         j++
       }
+      if (j == i) {
+        // Avoid zero-length tokens: if we're at an 'and', emit it; otherwise consume one char as name
+        if (i + 3 <= end) {
+          val sub = buffer.subSequence(i, i + 3).toString()
+          if (sub.equals("and", ignoreCase = true)) {
+            tokenEnd = i + 3
+            tokenType = BibTokenTypes.AUTHOR_AND
+            return
+          }
+        }
+        tokenEnd = i + 1
+        tokenType = BibTokenTypes.AUTHOR_NAME
+        return
+      }
       tokenEnd = j
       tokenType = BibTokenTypes.AUTHOR_NAME
       return
