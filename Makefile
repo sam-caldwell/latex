@@ -1,4 +1,4 @@
-.PHONY: help lint test test-all cover cover-check build run verify clean wrapper dist tag/patch tag/minor tag/major tag/pre
+.PHONY: help version lint test test-all cover cover-check build run verify clean wrapper dist tag/patch tag/minor tag/major tag/pre
 
 PLUGIN_DIR := intellij-latex-plugin
 GRADLEW := $(PLUGIN_DIR)/gradlew
@@ -12,6 +12,7 @@ SEMVER_RE := '^[0-9]+\.[0-9]+\.[0-9]+$$'
 
 help:()
 	@echo "Targets:"
+	@echo "  version  - Print current plugin version"
 	@echo "  lint     - Run Gradle 'check' (code quality/tests)"
 	@echo "  test     - Run unit tests"
 	@echo "  test-all - Run all tests, including LightPlatform"
@@ -74,6 +75,15 @@ wrapper:
 dist:
 	@ls -1 $(PLUGIN_DIR)/build/distributions/*.zip 2>/dev/null || \
 		echo "No distributions found. Run 'make build' first."
+
+# Print the current semantic version from build.gradle.kts
+version:
+	@set -e; \
+	FILE="$(VERSION_FILE)"; \
+	if [ ! -f "$$FILE" ]; then echo "Not found: $$FILE"; exit 1; fi; \
+	CUR=$$(sed -E -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' "$$FILE"); \
+	if [ -z "$$CUR" ]; then echo "Could not determine current version from $$FILE"; exit 1; fi; \
+	echo "version: $$CUR"
 
 # Bump patch version in build.gradle.kts and tag the repo
 tag/patch:
