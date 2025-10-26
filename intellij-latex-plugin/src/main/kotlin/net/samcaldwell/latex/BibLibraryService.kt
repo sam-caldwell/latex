@@ -210,6 +210,22 @@ import java.io.ByteArrayInputStream
       issues.addAll(validateBiblatexAuthorField(auth))
     }
 
+    // howpublished (BibLaTeX literal field): prefer for @misc/@online; should not contain URLs (use url field)
+    run {
+      val hp = valOf("howpublished")
+      if (hp.isNotEmpty()) {
+        val lower = hp.lowercase()
+        val containsUrl = lower.contains("http://") || lower.contains("https://") || lower.contains("ftp://")
+        if (containsUrl) {
+          err("howpublished", "Use the url field for URLs; 'howpublished' should be a literal description")
+        }
+        val allowed = setOf("misc", "online")
+        if (t !in allowed) {
+          warn("howpublished", "'howpublished' is typically used with @misc or @online entries")
+        }
+      }
+    }
+
     fun misspelled(text: String): List<String> = try { SpellcheckUtil.misspelledWords(project, text) } catch (_: Throwable) { emptyList() }
     fun checkSpell(field: String) {
       val v = valOf(field)

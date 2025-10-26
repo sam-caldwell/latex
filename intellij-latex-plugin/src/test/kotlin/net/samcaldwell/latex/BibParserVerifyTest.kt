@@ -17,6 +17,7 @@ class BibParserVerifyTest {
         modified = {2025-10-24T01:53:22Z},
         source = {web},
         title = {Breaking the Cycle of Recidivism: Understanding Causes & Solutions},
+        howpublished = {Televised speech},
         type = {article},
         url = {https://www.nealdavislaw.com/recidivism-causes-and-solutions/},
         year = {n.d.},
@@ -28,4 +29,3 @@ class BibParserVerifyTest {
     assertTrue(noMissingEq, "Parser erroneously reported missing '=' after field name: ${parsed.errors}")
   }
 }
-

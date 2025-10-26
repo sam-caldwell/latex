@@ -138,6 +138,25 @@ class BibLibraryServiceTest {
     assertFalse(content.contains("@misc{delkey"))
   }
 
+  @Test
+  fun `howpublished literal only and type guidance`() {
+    val svc = BibLibraryService(mockk(relaxed = true))
+    fun issuesFor(type: String, how: String): List<BibLibraryService.ValidationIssue> =
+      svc.validateEntryDetailed(BibLibraryService.BibEntry(type, "k", mapOf("title" to "t", "howpublished" to how)))
+
+    // URL in howpublished → error
+    val errorsUrl = issuesFor("misc", "see https://example.com")
+    assertTrue(errorsUrl.any { it.field == "howpublished" && it.severity == BibLibraryService.Severity.ERROR })
+
+    // Non-misc/online with howpublished → warning
+    val warnsType = issuesFor("book", "On microfiche")
+    assertTrue(warnsType.any { it.field == "howpublished" && it.severity == BibLibraryService.Severity.WARNING })
+
+    // misc/online with literal → ok
+    val okMisc = issuesFor("misc", "Televised speech")
+    assertTrue(okMisc.none { it.field == "howpublished" && it.severity == BibLibraryService.Severity.ERROR })
+  }
+
   // --- PDF import ---------------------------------------------------------
 
   @Test

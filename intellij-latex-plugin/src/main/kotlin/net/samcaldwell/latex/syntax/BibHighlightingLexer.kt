@@ -157,7 +157,7 @@ class BibHighlightingLexer : LexerBase() {
       return
     }
 
-    // Special handling when inside title value: emit braces separately and content as TITLE_VALUE
+    // Special handling when inside title-like value: emit braces separately and treat the full braced content as one token
     if (inTitleValue) {
       when (ch) {
         '{' -> {
@@ -174,29 +174,33 @@ class BibHighlightingLexer : LexerBase() {
           return
         }
       }
-      // Emit content until next brace or end
-      while (i < end) {
-        val c = buffer[i]
-        if (c == '{' || c == '}') break
-        i++
+      // Emit entire content up to the matching closing brace (allow nested braces)
+      var j = i
+      var depth = 1
+      while (j < end) {
+        val c = buffer[j]
+        if (c == '{') depth++ else if (c == '}') { depth--; if (depth == 0) break }
+        j++
       }
-      tokenEnd = i
+      tokenEnd = j
       tokenType = BibTokenTypes.TITLE_VALUE
       return
     }
 
-    // Special handling when inside abstract value: emit braces separately and content as ABSTRACT_VALUE
+    // Special handling when inside abstract value: emit braces separately and treat the full braced content as one token
     if (inAbstractValue) {
       when (ch) {
         '{' -> { abstractDepth++; tokenEnd = i + 1; tokenType = BibTokenTypes.LBRACE; return }
         '}' -> { abstractDepth--; tokenEnd = i + 1; tokenType = BibTokenTypes.RBRACE; if (abstractDepth <= 0) { inAbstractValue = false; lastFieldWasAbstract = false }; return }
       }
-      while (i < end) {
-        val c = buffer[i]
-        if (c == '{' || c == '}') break
-        i++
+      var j = i
+      var depth = 1
+      while (j < end) {
+        val c = buffer[j]
+        if (c == '{') depth++ else if (c == '}') { depth--; if (depth == 0) break }
+        j++
       }
-      tokenEnd = i
+      tokenEnd = j
       tokenType = BibTokenTypes.ABSTRACT_VALUE
       return
     }
@@ -352,18 +356,20 @@ class BibHighlightingLexer : LexerBase() {
       return
     }
 
-    // Special handling when inside source value: emit braces separately and content as SOURCE_VALUE
+    // Special handling when inside source value: emit braces separately and treat the full braced content as one token
     if (inSourceValue) {
       when (ch) {
         '{' -> { sourceDepth++; tokenEnd = i + 1; tokenType = BibTokenTypes.LBRACE; return }
         '}' -> { sourceDepth--; tokenEnd = i + 1; tokenType = BibTokenTypes.RBRACE; if (sourceDepth <= 0) { inSourceValue = false; lastFieldWasSource = false }; return }
       }
-      while (i < end) {
-        val c = buffer[i]
-        if (c == '{' || c == '}') break
-        i++
+      var j = i
+      var depth = 1
+      while (j < end) {
+        val c = buffer[j]
+        if (c == '{') depth++ else if (c == '}') { depth--; if (depth == 0) break }
+        j++
       }
-      tokenEnd = i
+      tokenEnd = j
       tokenType = BibTokenTypes.SOURCE_VALUE
       return
     }
