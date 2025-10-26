@@ -1,6 +1,8 @@
 # BibTeX/BibLaTeX Parser (Verify/Reformat)
 
-This document describes the recursive‑descent parser and lexer that power the Verify and Reformat features in the IntelliJ LaTeX/Bibliography plugin. It focuses on the concrete grammar, tokenization, error recovery, and the semantic rules applied downstream (canonicalization, validation, and normalization).
+This document describes the recursive‑descent parser and lexer that power the Verify and Reformat features in the 
+IntelliJ LaTeX/Bibliography plugin. It focuses on the concrete grammar, tokenization, error recovery, and the semantic
+rules applied downstream (canonicalization, validation, and normalization).
 
 The implementation lives under:
 - `intellij-latex-plugin/src/main/kotlin/net/samcaldwell/latex/bibtex/`
@@ -8,190 +10,217 @@ The implementation lives under:
   - `BibParser.kt` – recursive‑descent parser → AST
   - `BibAst.kt` – AST node/part/value types
 
-## Design Goals
 
-- Treat braced values as opaque, contiguous blocks at the top level (e.g., `abstract = {…}` and `title = {…}` are a single unit).
-- Accept both canonical and common BibTeX/BibLaTeX idioms (directives, entries, field values, macro concatenations via `#`).
-- Be resilient to minor formatting issues and recover from local errors without cascading failures.
-- Keep offsets for precise diagnostics and navigation.
+source: https://mirrors.ibiblio.org/CTAN/macros/latex/contrib/biblatex/doc/biblatex.pdf
 
 ## Lexical Grammar (Tokens)
 
 Input is read as a stream of tokens. Whitespace and comments are skipped between tokens.
 
-- `AT` → `@`
-- `IDENT` → `[A-Za-z_][A-Za-z0-9_-]*`
-- `NUMBER` → `\d+`
-- `LBRACE`/`RBRACE` → `{` / `}`
-- `LPAREN`/`RPAREN` → `(` / `)`
-- `EQUALS` → `=`
-- `COMMA` → `,`
-- `HASH` → `#`
-- `QUOTED_STRING` → `"…"` with `\` escapes
-- `EOF` → end of input
-- Comments: line comments begin with `%` and go to end‑of‑line.
+### Token set
 
-Special lexer helper:
-- `readBracedString()` reads a full braced block starting at `{`, returning the content without the outer braces, tracking nested braces. This is used to produce a single contiguous value part for `{…}`.
+- WS → `[ \t\r\n]+`
+  - Normalize newlines as \r\n | \n | \r. Outside strings, WS is insignificant except where it separates tokens.
+- LINE_COMMENT → "%" not_newline* newline
+  - Discards from % to end of line. (Only %… line comments; block comments are parsed as a directive, see below.)
+- AT → "@"
+  - Introduces directives and entries (@string, @preamble, @comment, @<entrytype>). Case-insensitive.
+- LBRACE / RBRACE → "{" / "}"
+  - Used both as record delimiters and braced string delimiters. Braced strings allow nesting; lexer must track brace depth.
+- LPAREN / RPAREN → "(" / ")"
+  - Alternate record delimiters and for @comment(...) payloads; must be matched.
+- COMMA → ","
+  - Field/list separator inside records.
+- EQUALS → "="
+  - Field/value and @string name/value separator.
+- HASH → "#"
+  - BibTeX concatenation operator between value parts; optional WS around #.
+- QUOTE → '"'
+  - Starts/ends quoted strings; quoted strings do not allow unescaped " or newlines; they may include balanced {…} groups as text units.
+- IDENT → case‑insensitive identifier (entry types, field names, string macro names)
+    - Pattern:
+        - IDENT_START = ASCII letter or _ or any Unicode letter
+        - IDENT_CONT = letters | digits | _ | - | : | . (repeat 0+)
+    - Comparisons are case‑insensitive; preserve original spelling.
+- KEY → citation key following an entry’s opening delimiter
+  - Pattern: one or more characters except whitespace, ,, {, }, (, ), ".
+  - Keep raw lexeme.
+- NUMBER → [0-9]+
+  - Decimal integer atom (signs belong to higher‑level date semantics, not NUMBER).
+- BRACED_STRING (composite)
+  - Form: { string‑chunk* } with nesting.
+  - string‑chunk ∈ { TEXT, BRACED_STRING }.
+  - TEXT: any char except { or } (Unicode allowed).
+  - TeX escapes (e.g., \{"o}) are plain text; only braces affect structure.
+- QUOTED_STRING (composite)
+  - Form: " q‑chunk* ".
+  - q‑chunk ∈ { QTEXT, BRACED_STRING }.
+  - QTEXT: any char except " or newline.
+- DIRECTIVE (recognized after @, case‑insensitive literals)
+  - string → @string{ name = value } or paren form.
+  - preamble → @preamble{ value } or paren form (value supports concatenation).
+  - comment → @comment{ ... } or paren form; payload is opaque (no field tokenization).
 
-## AST Value Model
+- Lexing Modes (Required)
+  - Default
+    - Recognize @, punctuation, IDENT, NUMBER, KEY, LINE_COMMENT, WS.
+  - InQuotedString
+    - Collect QUOTED_STRING, allowing embedded BRACED_STRING groups; reject raw newlines and unescaped ".
+  - InBracedString / InBlob
+    - Maintain nesting depth for {…} (and for @comment(...), paren depth). Return when depth returns to zero.
 
-Value expressions are concatenations of one or more value parts, optionally joined with `#`.
+- Operator/Keyword Sensitivity
+  - Case‑insensitive: @<word> (entry types/directives), field names, string macro names, and the literal separator and used later to split name lists. Do not reserve and at lex time; splitting is a semantic step over field values.
+  - Concatenation: Only # between value parts (IDENT, NUMBER, BRACED_STRING, QUOTED_STRING). Optional WS around #.
 
-```
-ValueExpr := Term { '#' Term }
-Term      := BracedText | QuotedText | Identifier | Number
-```
+- Unicode & Escapes
+  - Accept UTF‑8 across TEXT/QTEXT and identifiers. Preserve original bytes for round‑trip output.
+  - Backslash sequences are not lexical escapes; treat them as ordinary text inside strings. Brace/paren matching alone governs grouping.
 
-The AST value parts are:
-- `BracedText(text: String)` – content of a full `{…}` block (including nested braces) captured as a single part.
-- `QuotedText(text: String)` – content of a `"…"` literal.
-- `Identifier(name: String)` – macro/ident part.
-- `NumberLiteral(text: String)` – numeric part.
-
-Flattening helpers:
-- `flattenValue(ValueExpr)` – concatenates parts (identifiers are left as names).
-- `flattenValueWith(ValueExpr, stringMap)` – concatenates parts, resolving identifiers from the current `@string` map.
-- Both collapse newline/indentation inside values to single spaces (verification normalization rule).
+- Minimal Parser Precedence (Context for Syntax Phase)
+  Within a value:
+  ```
+  VALUE := PART ( WS? '#' WS? PART )*
+  PART  := IDENT | NUMBER | BRACED_STRING | QUOTED_STRING
+  ```
+  No other operators exist at the lexical level.
 
 ## File Grammar (EBNF)
+(* ---------- File & Top-level ---------- *)
+file            = { wsp | line_comment | block_comment | directive | entry } ;
 
-Top level:
+directive       = preamble | stringdef | comment_directive ;
 
-```
-File   := { Node }
-Node   := Entry | StringDirective | PreambleDirective | CommentDirective
+preamble        = "@" , (? case-insensitive ? "preamble") , payload ;
+stringdef       = "@" , (? i ? "string")   , defpair ;
+comment_directive= "@" , (? i ? "comment") , payload ;
 
-StringDirective  := '@' 'string' DelimOpen Ident '=' ValueExpr [ { ',' } ] DelimClose
-PreambleDirective:= '@' 'preamble' DelimOpen ValueExpr [ { ',' } ] DelimClose
-CommentDirective := '@' 'comment' DelimOpen [ BracedText ] DelimClose
+entry           = "@" , entrytype , record ;
 
-DelimOpen  := '{' | '('
-DelimClose := '}' | ')'
-```
+(* ---------- Records & payloads ---------- *)
+record          = braced_record | paren_record ;
+braced_record   = "{" , wsp , key , fields_opt , wsp , "}" ;
+paren_record    = "(" , wsp , key , fields_opt , wsp , ")" ;
 
-Entries:
+fields_opt      = [ [ key , wsp , "," , wsp ] , fieldlist , [ wsp , "," ] ] ;
+fieldlist       = field , { wsp , "," , wsp , field } ;
+field           = ident , wsp , "=" , wsp , value ;
 
-```
-Entry := '@' EntryType DelimOpen Key ',' FieldList DelimClose
+defpair         = braced_defpair | paren_defpair ;
+braced_defpair  = "{" , wsp , ident , wsp , "=" , wsp , value , wsp , "}" ;
+paren_defpair   = "(" , wsp , ident , wsp , "=" , wsp , value , wsp , ")" ;
 
-EntryType := IDENT (case‑insensitive)
-Key       := IDENT | NUMBER | QUOTED_STRING | BracedText (trimmed)
+payload         = braced_blob | paren_blob ;
+braced_blob     = "{" , { blob_item } , "}" ;
+blob_item       = blob_text | braced_blob ;
+paren_blob      = "(" , { paren_item } , ")" ;
+paren_item      = paren_text | paren_blob ;
 
-FieldList := { [ Field | ',' ] }
-Field     := FieldName FieldEquals ValueExpr [ ',' ]
+(* ---------- Values & atoms ---------- *)
+value           = part , { wsp , "#" , wsp , part } ;          (* BibTeX ‘#’ concat *)
+part            = braced_string | quoted_string | number | ident ;
 
-FieldName  := IDENT
-FieldEquals:= '=' (may be implicitly accepted if a Term token follows; see recovery)
-```
+braced_string   = "{" , { string_item } , "}" ;                (* nested braces ok *)
+string_item     = br_text | braced_string ;
 
-Notes:
-- We accept both `@type{…}` and `@type(…)` delimiters.
-- The entry key after `@type{` … `,` is unbraced by definition and is not parsed as a field value.
-- We accept trailing commas inside directive and entry field lists.
+quoted_string   = '"' , { qt_text | braced_string } , '"' ;
 
-## Error Recovery and Robustness
+number          = digit , { digit } ;
+ident           = ident_start , { ident_cont } ;
+ident_start     = letter | "_" ;
+ident_cont      = letter | digit | "_" | "-" | ":" | "." ;
+key             = key_char , { key_char } ;
+entrytype       = ident ;                                      (* e.g., article, book, xdata, set, … *)
 
-The parser is designed to avoid spurious diagnostics in real‑world .bib files:
+(* ---------- Lexical trivia ---------- *)
+line_comment    = "%" , { not_newline } , newline ;
+wsp             = { space | tab | newline } ;
+space           = " " ; tab = "\t" ;
+newline         = "\r\n" | "\n" | "\r" ;
+not_newline     = ? any char except newline ? ;
+letter          = ? Unicode letter ? ;
+digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+key_char        = ? any Unicode char except whitespace, ",", "{", "}", "(", ")", '"' ? ;
+br_text         = ? any char except "{" | "}" ? ;
+qt_text         = ? any char except '"' | newline ? ;
+blob_text       = ? any char except "{" | "}" ? ;
+paren_text      = ? any char except "(" | ")" ? ;
 
-- Missing `=` resiliency: If a field name is followed by a token that clearly begins a value term (`{`, `"`, number, identifier), we proceed as if `=` were present and do not error.
-- Field name recovery: If a token other than `IDENT` appears where a field name is expected, we:
-  - Exit the field list if we see a closing delimiter or `EOF`.
-  - Consume stray commas and continue.
-  - Otherwise, advance tokens until we hit `IDENT`/`COMMA`/closer/`EOF`. If a comma is found, we consume and continue; if `IDENT`, we resume with a field; else we exit.
-- Braced value capture: `readBracedString()` treats a braced block (with nested braces) as a single contiguous block so values like `abstract = {…}` or `title = {…}` are parsed as a single unit. The parser does not re‑tokenize inside the outermost braces for the purposes of field parsing.
+(* ===================================================================== *)
+(*                 biblatex-aware value subgrammars                       *)
+(* ===================================================================== *)
 
-These recovery paths prevent false positives like “Expected field name” or “Missing '=' after field name” when values are properly braced but interspersed with unexpected whitespace or comments.
+(* ---------- Name lists (all name fields) ---------- *)
+(* A name list is one or more names separated by the literal word 'and'. *)
+name_list       = name , { wsp , (? i ? "and") , wsp , name } ;
 
-## Semantics Used by Verify / Reformat
+(* A name may be:
+- “simple” BibTeX form:   [von-part ] family [ "," given [ "," suffix ] ]
+- or the extended key=val form (recommended by biber/biblatex). *)
+  name            = extended_name | simple_name ;
 
-After parsing to AST:
+(* Extended name format (may be mixed in name_list).
+Keys commonly include: family, given, prefix, suffix, id, useprefix, etc.
+Values are braced/quoted strings per ‘part’. *)
+extended_name   = name_kv , { wsp , "," , wsp , name_kv } ;
+name_kv         = name_key , wsp , "=" , wsp , name_val ;
+name_key        = ident ;                       (* e.g., family|given|prefix|suffix|id … *)
+name_val        = part | braced_string ;        (* usual value atoms *)
 
-1) `@string` expansion
-   - Build a map of string macros in first‑seen order.
-   - When flattening values for validation/serialization, identifiers are replaced from this map, respecting concatenation with `#`.
+(* Simple BibTeX name syntax. Comma forms are optional; protect case with braces. *)
+simple_name     = [ von_part , wsp ] , family ,
+[ wsp , "," , wsp , given ,
+[ wsp , "," , wsp , suffix ] ] ;
 
-2) Canonicalization (field aliases)
-   - Canonical field names:
-     - `journal` → `journaltitle`
-     - `address` → `location`
-     - `school` → `institution`
-   - Canonicalize maps before validation and before writing. UI may still display familiar aliases (“Journal”), but serialization uses canonicals.
+von_part        = word , { wsp , word } ;       (* tokens starting lowercase *)
+family          = word , { wsp , word } ;
+given           = word , { wsp , word } ;
+suffix          = word , { wsp , word } ;
+word            = { letter | digit | "-" | "'" | "." | "~" | " " | "{" | "}" }+ ;
 
-3) Entry type normalization
-   - Normalize common synonyms (e.g., `conference` → `inproceedings`, `website` → `online`).
-   - If the header type is not in the strict BibLaTeX set, serialize as `@misc` and preserve UI type in `entrysubtype`.
-   - Effective validation type is header type unless it is `misc` with a non‑blank `entrysubtype`.
+(* ---------- Literal lists (xsv fields in the data model) ---------- *)
+(* Fields declared with format=xsv are token lists separated by a delimiter
+chosen by the style (often comma or semicolon). Parser treats them as text;
+splitting is a semantic step. *)
+xsv_literal     = literal , { wsp , list_sep , wsp , literal } ;
+literal         = part ;
+list_sep        = "," | ";" | ":" ;             (* typical separators *)
 
-4) Crossref/xdata resolution
-   - For each entry, resolve `crossref` and `xdata` chains (with cycle/depth guards) and fill missing fields from parents.
+(* ---------- Date/time values (ISO 8601-2 Level 1 + biblatex extensions) ---------- *)
+(* Applies to date, origdate, eventdate, urldate, etc. *)
+date_value      = date_point
+| date_point , "/" , date_point         (* closed range *)
+| date_point , "/"                      (* open-ended range *)
+| "/" , date_point ;                    (* open-start range *)
 
-5) Validation rules (selected highlights)
-   - Brace wrapping: Every field value must be a single top‑level `{…}` block (ERROR) except for the entry key after `@type{key,`.
-   - Dates (BibLaTeX): `date`, `eventdate`, `origdate`, `urldate` accept `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, ranges `start/end` (open ends allowed), or `n.d.` (case‑insensitive).
-   - Year: `YYYY` or `n.d.`.
-   - Timestamps (editor metadata): `created`, `modified`, `timestamp` require ISO8601 `YYYY-MM-DDThh:mm[:ss][Z|±hh:mm]`.
-   - URL: absolute `http`, `https`, `ftp` only; no spaces/control chars; percent encodings must be `%HH`.
-   - Author: BibLaTeX personal/corporate name semantics are validated (family/given, `and` separation, corporate in braces).
+date_point      = year
+| year , "-" , month
+| year , "-" , month , "-" , day
+| "unknown" ;                           (* unspecified cases handled semantically *)
 
-6) Normalization for Reformat
-   - Values are serialized as `name = {value}` (single brace‑wrapped block). Multi‑line indentation and newlines are collapsed to single spaces.
-   - Dates normalized to canonical (zero‑padded). Timestamps normalized to padded ISO 8601 with zone.
-   - URLs normalized to RFC 3986 ASCII form where possible.
-   - Directives (`@string`, `@preamble`, `@comment`) are written first in original order; entries follow sorted by `(type, author, title, year)`.
-   - Fields are written in simple alphanumeric order, with a small priority group at the top.
+year            = [ "+" | "-" ] , digit , digit , digit , digit ;
+month           = "01" | "02" | "03" | "04" | "05" | "06"
+| "07" | "08" | "09" | "10" | "11" | "12" ;
+day             = "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09"
+| "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19"
+| "20" | "21" | "22" | "23" | "24" | "25" | "26" | "27" | "28" | "29" | "30" | "31" ;
 
-## Formal Grammar (Summary)
+(* Time-of-day may be present in some fields; parse as a suffix if needed. *)
+time_suffix     = "T" , hour , ":" , minute , [ ":" , second ]
+, [ ( "Z" | tz_offset ) ] ;
+hour            = "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09"
+| "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19"
+| "20" | "21" | "22" | "23" ;
+minute          = "00" | "01" | … | "59" ;
+second          = "00" | "01" | … | "59" ;
+tz_offset       = ( "+" | "-" ) , hour , ":" , minute ;
 
-```
-File      := { Node }
-Node      := Entry | StringDirective | PreambleDirective | CommentDirective
-
-StringDirective   := '@' 'string' DelimOpen Ident '=' ValueExpr [ { ',' } ] DelimClose
-PreambleDirective := '@' 'preamble' DelimOpen ValueExpr [ { ',' } ] DelimClose
-CommentDirective  := '@' 'comment'  DelimOpen [ BracedText ] DelimClose
-
-Entry     := '@' EntryType DelimOpen Key ',' FieldList DelimClose
-EntryType := IDENT
-Key       := IDENT | NUMBER | QUOTED_STRING | BracedText
-
-FieldList := { [ Field | ',' ] }
-Field     := FieldName FieldEquals ValueExpr [ ',' ]
-FieldName := IDENT
-FieldEquals := '=' | (implicit if ValueExpr follows)
-
-ValueExpr := Term { '#' Term }
-Term      := BracedText | QuotedText | Identifier | Number
-
-DelimOpen  := '{' | '('
-DelimClose := '}' | ')'
-
-Identifier := IDENT
-Number     := NUMBER
-BracedText := '{' … '}'    (balanced; captured as a single unit)
-QuotedText := '"' … '"'   (with escapes)
-```
-
-## Notes on Implementation Details
-
-- Offsets/line:column mapping: The parser keeps offsets; `toLineCol(offset)` recomputes line/column for diagnostics and navigation.
-- Error objects: `ParserError(message, offset)` are produced for structural issues the parser cannot recover from; Verify renders them with `line:col`.
-- Recovery limits: The recovery loop while searching for the next field has a defensive step limit to avoid infinite scans on malformed input.
-
-## Known Edge Cases (Handled)
-
-- Trailing commas and stray commas between fields are tolerated.
-- Implicit `=` when value clearly begins (avoids false “Missing '='”).
-- Braced values with nested braces are treated as one unit (no splitting inside).
-- Early closers (`}` or `)`) gracefully end the field list without spurious errors.
-
-## Out of Scope for the Parser (Handled Semantically)
-
-- Type aliasing and field canonicalization.
-- Crossref/xdata merging.
-- Date/timestamp/URL normalization and validation.
-- Author name parsing/validation (performed in validation layer).
-
----
-
-If you encounter a concrete input that still surfaces a false parser error, please capture the exact line(s) and we’ll add a targeted test and, if needed, adjust recovery to treat it as valid. The intent is that valid patterns like `abstract = {…},`/`title = {…},`/`journal = {…},` never produce parser diagnostics.
+(* ===================================================================== *)
+(* Notes:
+• Top-level syntax supports @entry{…} and @entry(…) with matching delimiters.
+• Fields accept BibTeX ‘#’ concatenation of atoms.
+• Name lists use literal ‘and’; extended name format is key=value pairs (e.g.,
+{family=Smith, given=John}) and can be mixed with simple names.
+• Date fields follow ISO 8601-2 level-1 forms and open/closed ranges with “/”.
+• Field types (name vs list vs literal) and per-entry validity are enforced by
+the biblatex data model (biber --validate_datamodel), not by the lexer. *)
