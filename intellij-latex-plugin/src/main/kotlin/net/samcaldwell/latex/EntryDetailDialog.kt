@@ -104,6 +104,34 @@ class EntryDetailDialog(
   init {
     title = "Citation Details"
     isResizable = false
+    // Date input filter: allow YYYY-MM-DD or 'n.d.' (case-insensitive), with progressive typing
+    (dateField.document as? javax.swing.text.AbstractDocument)?.documentFilter = object : javax.swing.text.DocumentFilter() {
+      override fun insertString(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, string: String?, attr: javax.swing.text.AttributeSet?) {
+        if (string == null) return
+        val cur = fb.document.getText(0, fb.document.length)
+        val cand = cur.substring(0, offset) + string + cur.substring(offset)
+        if (isDateCandidate(cand)) super.insertString(fb, offset, string, attr)
+      }
+      override fun replace(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, length: Int, text: String?, attrs: javax.swing.text.AttributeSet?) {
+        val cur = fb.document.getText(0, fb.document.length)
+        val cand = cur.substring(0, offset) + (text ?: "") + cur.substring(offset + length)
+        if (isDateCandidate(cand)) super.replace(fb, offset, length, text, attrs)
+      }
+      private fun isDateCandidate(s: String): Boolean {
+        if (s.isEmpty()) return true
+        val nd = "n.d."
+        if (nd.startsWith(s, ignoreCase = true)) return true
+        if (s.length > 10) return false
+        // Must be digits or '-' and at positions 4 and 7 dashes when present
+        for (i in s.indices) {
+          val c = s[i]
+          if (i == 4 || i == 7) {
+            if (c != '-') return false
+          } else if (!c.isDigit()) return false
+        }
+        return true
+      }
+    }
     // Style read-only fields with grey text
     run {
       val grey = try {
@@ -226,7 +254,7 @@ class EntryDetailDialog(
     }
     yearField.text = (e.fields["year"] ?: "").let { s -> Regex("""\b(\d{4})\b""").find(s)?.groupValues?.getOrNull(1) ?: "" }
     dateField.text = e.fields["date"] ?: ""
-    journalField.text = e.fields["journal"] ?: ""
+    journalField.text = (e.fields["journaltitle"] ?: e.fields["journal"]) ?: ""
     volumeField.text = e.fields["volume"] ?: ""
     issueField.text = (e.fields["number"] ?: e.fields["issue"]) ?: ""
     pagesField.text = e.fields["pages"] ?: ""
@@ -572,6 +600,7 @@ class EntryDetailDialog(
       if (!hasReporter) {
         if (docket.isEmpty() || wl.isEmpty()) errs += "Provide reporter info or both Docket and WL/Lexis"
         if (date.isEmpty()) errs += "Decision Date is required for slip opinions"
+        else if (!date.matches(Regex("(\\d{4}-\\d{2}-\\d{2}|(?i)n\\.d\\.)"))) errs += "Decision Date must be YYYY-MM-DD or n.d."
         if (court.isEmpty()) errs += "Court is required for slip opinions"
       }
       if (errs.isNotEmpty()) {
@@ -622,7 +651,7 @@ class EntryDetailDialog(
       publisherField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["publisher"] = it }
     }
     // Other fields
-    journalField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["journal"] = it }
+    journalField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["journaltitle"] = it }
     volumeField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["volume"] = it }
     issueField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["number"] = it }
     pagesField.text.trim().takeIf { it.isNotEmpty() }?.let { fields["pages"] = it }

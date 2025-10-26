@@ -79,22 +79,69 @@ import java.io.ByteArrayInputStream
     val fields: Map<String, String>
   )
 
+  // Canonical field names and aliases (BibLaTeX-oriented)
+  // - journaltitle is canonical; accept 'journal' as alias for compatibility
+  // - location is canonical; accept 'address' as alias
+  // - institution is canonical; accept 'school' as alias
+  fun canonicalFieldName(name: String): String {
+    return when (name.trim().lowercase()) {
+      "journal" -> "journaltitle"
+      "journaltitle" -> "journaltitle"
+      "address" -> "location"
+      "location" -> "location"
+      "school" -> "institution"
+      else -> name.trim().lowercase()
+    }
+  }
+
+  fun canonicalizeFields(fields: Map<String, String>): Map<String, String> {
+    if (fields.isEmpty()) return fields
+    val out = linkedMapOf<String, String>()
+    for ((kRaw, vRaw) in fields) {
+      val k = canonicalFieldName(kRaw)
+      // Collapse indentation/newline whitespace for multi-line values
+      val v = normalizeMultilineField(vRaw)
+      // Prefer existing canonical key if both alias and canonical are present; do not overwrite non-empty with empty
+      val cur = out[k]
+      if (cur == null || cur.isBlank()) out[k] = v else if (v.isNotBlank() && cur.isBlank()) out[k] = v
+    }
+    return out
+  }
+
+  // Provide display aliases expected by older UI code (e.g., 'journal')
+  fun withDisplayAliases(fields: Map<String, String>): Map<String, String> {
+    if (fields.isEmpty()) return fields
+    val out = linkedMapOf<String, String>()
+    out.putAll(fields)
+    // Mirror journaltitle -> journal for display only if not already present
+    val jt = fields["journaltitle"]?.trim()
+    if (!jt.isNullOrEmpty() && !out.containsKey("journal")) out["journal"] = jt
+    // Mirror location -> address for display-only, if some views expect it (not used widely yet)
+    val loc = fields["location"]?.trim()
+    if (!loc.isNullOrEmpty() && !out.containsKey("address")) out["address"] = loc
+    // Mirror institution -> school for display-only if needed
+    val inst = fields["institution"]?.trim()
+    if (!inst.isNullOrEmpty() && !out.containsKey("school")) out["school"] = inst
+    return out
+  }
+
   enum class Severity { ERROR, WARNING }
   data class ValidationIssue(val field: String, val message: String, val severity: Severity)
 
   fun validateEntryDetailed(entry: BibEntry): List<ValidationIssue> {
     val issues = mutableListOf<ValidationIssue>()
     val t = entry.type.trim().lowercase()
-    val f = entry.fields
+    val f = canonicalizeFields(entry.fields)
 
     fun err(field: String, msg: String) { issues += ValidationIssue(field, msg, Severity.ERROR) }
     fun warn(field: String, msg: String) { issues += ValidationIssue(field, msg, Severity.WARNING) }
 
-    fun has(k: String) = f[k]?.trim().orEmpty().isNotEmpty()
-    fun valOf(k: String) = f[k]?.trim().orEmpty()
+    fun has(k: String) = f[canonicalFieldName(k)]?.trim().orEmpty().isNotEmpty()
+    fun valOf(k: String) = f[canonicalFieldName(k)]?.trim().orEmpty()
 
     val required: Set<String> = when (t) {
-      "article" -> setOf("author", "title", "journal", "year")
+      // Switch to canonical journaltitle for articles
+      "article" -> setOf("author", "title", "journaltitle", "year")
       "book" -> setOf("author", "title", "publisher", "year")
       "inproceedings", "conference paper" -> setOf("author", "title", "year")
       "thesis", "thesis (or dissertation)" -> setOf("author", "title", "year", "publisher")
@@ -123,18 +170,44 @@ import java.io.ByteArrayInputStream
 
     val url = valOf("url")
     if (url.isNotEmpty()) {
-      val ok = try { (url.startsWith("http://") || url.startsWith("https://")) && java.net.URI(url).isAbsolute } catch (_: Throwable) { false }
-      if (!ok) err("url", "URL must start with http:// or https://")
+      val ok = isValidHttpUrlRfc3986(url)
+      if (!ok) err("url", "Invalid URL (RFC 3986): must be http/https/ftp, absolute, and correctly percent-encoded")
+    }
+
+    fun checkBiblatexDate(field: String) {
+      val s = valOf(field)
+      if (s.isEmpty()) return
+      if (!isValidBiblatexDate(s)) err(field, "Date must be YYYY, YYYY-MM, YYYY-MM-DD, a range start/end (open start/end allowed), or n.d.")
+    }
+    checkBiblatexDate("date")
+    checkBiblatexDate("eventdate")
+    checkBiblatexDate("origdate")
+    checkBiblatexDate("urldate")
+    // Editor metadata timestamps use ISO 8601 datetime with optional zone
+    fun checkIsoTs(field: String) {
+      val s = valOf(field)
+      if (s.isEmpty()) return
+      if (!isValidIso8601Timestamp(s)) err(field, "Timestamp must be YYYY-MM-DDThh:mm[:ss][Z|±hh:mm]")
+    }
+    checkIsoTs("created")
+    checkIsoTs("modified")
+    checkIsoTs("timestamp")
+
+    // If both date and year provided, warn if inconsistent with the first year component
+    run {
+      val d = valOf("date")
+      val y = valOf("year")
+      if (d.isNotEmpty() && y.isNotEmpty() && y.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) {
+        val firstYear = extractFirstYearFromBiblatexDate(d)
+        if (firstYear != null && y.matches(Regex("\\d{4}")) && firstYear != y) {
+          warn("year", "Year (${y}) does not match date (${d}); consider aligning or using only date")
+        }
+      }
     }
 
     val auth = valOf("author")
     if (auth.isNotEmpty()) {
-      val parts = auth.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
-      for (p in parts) {
-        val isCorporate = p.startsWith("{") && p.endsWith("}")
-        val hasComma = p.contains(',')
-        if (!isCorporate && !hasComma) warn("author", "Author '$p' should be 'Family, Given' or wrapped in { } for corporate names")
-      }
+      issues.addAll(validateBiblatexAuthorField(auth))
     }
 
     fun misspelled(text: String): List<String> = try { SpellcheckUtil.misspelledWords(project, text) } catch (_: Throwable) { emptyList() }
@@ -144,12 +217,330 @@ import java.io.ByteArrayInputStream
       val miss = misspelled(v)
       if (miss.isNotEmpty()) warn(field, "Possible spelling issues: ${miss.take(5).joinToString(", ")}${if (miss.size > 5) ", …" else ""}")
     }
-    checkSpell("title"); checkSpell("journal"); checkSpell("publisher"); checkSpell("abstract");
+    checkSpell("title"); checkSpell("journaltitle"); checkSpell("publisher"); checkSpell("abstract");
 
     return issues
   }
 
+  // --- BibLaTeX author field validation ----------------------------------
+  private fun validateBiblatexAuthorField(raw: String): List<ValidationIssue> {
+    val out = mutableListOf<ValidationIssue>()
+    // Split authors on top-level 'and'
+    val list = splitAuthorsTopLevel(raw)
+    if (list.isEmpty()) {
+      out += ValidationIssue("author", "Author list is empty", Severity.ERROR)
+      return out
+    }
+    for (p in list) out += validateSingleAuthor(p)
+    return out
+  }
+
+  private fun splitAuthorsTopLevel(s: String): List<String> {
+    val res = mutableListOf<String>()
+    val sb = StringBuilder()
+    var depth = 0
+    var i = 0
+    fun isWs(ch: Char) = ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+    while (i < s.length) {
+      val ch = s[i]
+      if (ch == '{') { depth++; sb.append(ch); i++; continue }
+      if (ch == '}') { depth = (depth - 1).coerceAtLeast(0); sb.append(ch); i++; continue }
+      if (depth == 0) {
+        // detect case-insensitive 'and' with whitespace boundaries
+        if ((ch == 'a' || ch == 'A') && i + 3 <= s.length) {
+          val sub = s.substring(i, kotlin.math.min(i + 3, s.length))
+          if (sub.equals("and", ignoreCase = true)) {
+            val prev = if (sb.isNotEmpty()) sb.last() else null
+            val next = if (i + 3 < s.length) s[i + 3] else null
+            val prevWs = (prev == null) || isWs(prev)
+            val nextWs = (next == null) || isWs(next)
+            if (prevWs && nextWs) {
+              // flush current token
+              val token = sb.toString().trim()
+              if (token.isNotEmpty()) res += token
+              sb.setLength(0)
+              i += 3
+              // consume following whitespace
+              while (i < s.length && isWs(s[i])) i++
+              continue
+            }
+          }
+        }
+      }
+      sb.append(ch)
+      i++
+    }
+    val tail = sb.toString().trim()
+    if (tail.isNotEmpty()) res += tail
+    return res
+  }
+
+  private fun validateSingleAuthor(partRaw: String): List<ValidationIssue> {
+    val out = mutableListOf<ValidationIssue>()
+    val part = partRaw.trim()
+    if (part.isEmpty()) {
+      out += ValidationIssue("author", "Empty author segment", Severity.ERROR)
+      return out
+    }
+    // Organization if properly wrapped in a single outer pair of braces
+    if (hasSingleOuterBraces(part)) {
+      // check braces are balanced
+      if (!bracesBalanced(part)) out += ValidationIssue("author", "Unbalanced braces in organization author: $part", Severity.ERROR)
+      return out
+    }
+    // Personal name; count commas outside inner braces (accents)
+    var depth = 0
+    var commas = 0
+    for (c in part) {
+      when (c) {
+        '{' -> depth++
+        '}' -> depth = (depth - 1).coerceAtLeast(0)
+        ',' -> if (depth == 0) commas++
+      }
+    }
+    when (commas) {
+      0 -> {
+        // Given Family form: require at least two tokens
+        val tokens = part.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.size < 2) out += ValidationIssue("author", "Personal name '$part' should include family and given name(s) or use 'Family, Given' format", Severity.ERROR)
+      }
+      1 -> {
+        val segs = part.split(',')
+        val family = segs.getOrNull(0)?.trim().orEmpty()
+        val given = segs.getOrNull(1)?.trim().orEmpty()
+        if (family.isEmpty() || given.isEmpty()) out += ValidationIssue("author", "Personal name '$part' must be 'Family, Given' with both parts present", Severity.ERROR)
+      }
+      2 -> {
+        val segs = part.split(',')
+        val family = segs.getOrNull(0)?.trim().orEmpty()
+        val jr = segs.getOrNull(1)?.trim().orEmpty()
+        val given = segs.getOrNull(2)?.trim().orEmpty()
+        if (family.isEmpty() || given.isEmpty()) out += ValidationIssue("author", "Personal name '$part' must be 'Family, Jr, Given' with family and given present", Severity.ERROR)
+      }
+      else -> out += ValidationIssue("author", "Personal name '$part' has too many commas; use 'Family, Given' or 'Family, Jr, Given'", Severity.ERROR)
+    }
+    // Heuristic: warn if likely organization without braces
+    val orgHints = listOf("inc", "ltd", "llc", "university", "institute", "association", "committee")
+    if (!part.contains(',') && orgHints.any { part.contains(it, ignoreCase = true) }) {
+      out += ValidationIssue("author", "Organization author '$part' should be wrapped in braces: {$part}", Severity.WARNING)
+    }
+    return out
+  }
+
+  private fun hasSingleOuterBraces(s: String): Boolean {
+    if (!s.startsWith('{') || !s.endsWith('}')) return false
+    var depth = 0
+    for (i in s.indices) {
+      val c = s[i]
+      if (c == '{') depth++ else if (c == '}') depth--
+      if (depth == 0 && i != s.lastIndex) return false // closed before end: not a single outer pair
+    }
+    return depth == 0
+  }
+
+  private fun bracesBalanced(s: String): Boolean {
+    var depth = 0
+    for (c in s) {
+      if (c == '{') depth++ else if (c == '}') depth--
+      if (depth < 0) return false
+    }
+    return depth == 0
+  }
+
   private fun isValidDoi(s: String): Boolean = s.trim().matches(Regex("(?i)^10\\.\\S+/.+"))
+  // BibLaTeX date validation: supports
+  // - Single date: YYYY | YYYY-MM | YYYY-MM-DD
+  // - Ranges: start/end (both sides single-date), with open start or end allowed ("/YYYY" or "YYYY/")
+  // - Special: n.d. (case-insensitive)
+  private fun isValidBiblatexDate(s: String): Boolean {
+    val v = s.trim()
+    if (v.equals("n.d.", ignoreCase = true)) return true
+    val parts = v.split('/')
+    if (parts.size == 1) return isValidIsoDateLike(parts[0])
+    if (parts.size == 2) {
+      val a = parts[0].trim()
+      val b = parts[1].trim()
+      val aOk = a.isEmpty() || isValidIsoDateLike(a)
+      val bOk = b.isEmpty() || isValidIsoDateLike(b)
+      return aOk && bOk
+    }
+    return false
+  }
+
+  private fun isValidIsoDateLike(s: String): Boolean {
+    if (s.isEmpty()) return false
+    val m = Regex("^(\\d{4})(?:-(\\d{2})(?:-(\\d{2}))?)?$").matchEntire(s) ?: return false
+    val year = m.groupValues[1].toInt()
+    val mm = m.groupValues.getOrNull(2)?.takeIf { it.isNotEmpty() }?.toIntOrNull()
+    val dd = m.groupValues.getOrNull(3)?.takeIf { it.isNotEmpty() }?.toIntOrNull()
+    if (mm != null) {
+      if (mm !in 1..12) return false
+      if (dd != null) {
+        val maxDay = when (mm) {
+          1,3,5,7,8,10,12 -> 31
+          4,6,9,11 -> 30
+          2 -> if (isLeap(year)) 29 else 28
+          else -> return false
+        }
+        if (dd !in 1..maxDay) return false
+      }
+    }
+    return true
+  }
+
+  // --- URL validation/normalization (RFC 3986) -----------------------------
+  fun isValidHttpUrlRfc3986(s: String): Boolean {
+    val v = s.trim()
+    if (!(v.startsWith("http://", ignoreCase = true) || v.startsWith("https://", ignoreCase = true) || v.startsWith("ftp://", ignoreCase = true))) return false
+    // No spaces or control chars
+    if (v.any { it <= ' ' }) return false
+    // Percent-encodings must be %HH
+    run {
+      var i = 0
+      while (i < v.length) {
+        if (v[i] == '%') {
+          if (i + 2 >= v.length) return false
+          if (!v[i + 1].isDigitOrHex() || !v[i + 2].isDigitOrHex()) return false
+          i += 3
+          continue
+        }
+        i++
+      }
+    }
+    return try {
+      val uri = java.net.URI(v)
+      val scheme = uri.scheme?.lowercase()
+      val host = uri.host
+      scheme in setOf("http", "https", "ftp") && host != null && host.isNotBlank()
+    } catch (_: Throwable) { false }
+  }
+
+  fun normalizeHttpUrlRfc3986(s: String): String? {
+    var v = s.trim()
+    if (v.isEmpty()) return null
+    // Encode spaces to %20
+    if (v.contains(' ')) v = v.replace(" ", "%20")
+    // Normalize scheme to lowercase
+    runCatching {
+      val uri = java.net.URI(v)
+      val scheme = uri.scheme?.lowercase()
+      if (scheme == null) return@runCatching
+      val norm = java.net.URI(
+        scheme,
+        uri.userInfo,
+        uri.host,
+        uri.port,
+        uri.rawPath,
+        uri.rawQuery,
+        uri.rawFragment
+      )
+      v = norm.toASCIIString()
+    }
+    return if (isValidHttpUrlRfc3986(v)) v else null
+  }
+
+  private fun Char.isDigitOrHex(): Boolean = this.isDigit() || (this in 'A'..'F') || (this in 'a'..'f')
+
+  // ISO 8601 timestamp with optional seconds and zone: YYYY-MM-DDThh:mm[:ss][Z|±hh:mm]
+  private fun isValidIso8601Timestamp(s: String): Boolean {
+    val re = Regex("^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2}))?(Z|[+-]\\d{2}:\\d{2})?$")
+    val m = re.matchEntire(s.trim()) ?: return false
+    val y = m.groupValues[1].toInt()
+    val mo = m.groupValues[2].toInt()
+    val d = m.groupValues[3].toInt()
+    val hh = m.groupValues[4].toInt()
+    val mi = m.groupValues[5].toInt()
+    val ss = m.groupValues.getOrNull(6)?.toIntOrNull()
+    if (mo !in 1..12) return false
+    val maxDay = when (mo) { 1,3,5,7,8,10,12 -> 31; 4,6,9,11 -> 30; 2 -> if (isLeap(y)) 29 else 28; else -> return false }
+    if (d !in 1..maxDay) return false
+    if (hh !in 0..23) return false
+    if (mi !in 0..59) return false
+    if (ss != null && ss !in 0..59) return false
+    return true
+  }
+
+  private fun isLeap(y: Int): Boolean = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+
+  private fun extractFirstYearFromBiblatexDate(s: String): String? {
+    val v = s.trim()
+    if (v.equals("n.d.", ignoreCase = true)) return null
+    val first = v.substringBefore('/')
+    val m = Regex("^(\\d{4})").find(first.trim()) ?: return null
+    return m.groupValues[1]
+  }
+
+  // Normalize a BibLaTeX date or date-range to canonical form:
+  // - Single date: YYYY | YYYY-MM | YYYY-MM-DD, zero-padded where needed
+  // - Range: start/end where each side is a single date (open ends allowed)
+  // - n.d. normalized to lowercase 'n.d.'
+  // Returns null if the input is not a valid BibLaTeX date
+  fun normalizeBiblatexDateField(input: String?): String? {
+    val s = input?.trim() ?: return null
+    if (s.isEmpty()) return null
+    if (s.equals("n.d.", ignoreCase = true)) return "n.d."
+    val parts = s.split('/')
+    if (parts.size == 1) {
+      val norm = normalizeIsoLikeSingle(parts[0].trim())
+        ?: normalizeIsoLikeSingleLoose(parts[0].trim())
+        ?: return null
+      return norm
+    }
+    if (parts.size == 2) {
+      val a = parts[0].trim()
+      val b = parts[1].trim()
+      val aNorm = if (a.isEmpty()) "" else (normalizeIsoLikeSingle(a) ?: normalizeIsoLikeSingleLoose(a) ?: return null)
+      val bNorm = if (b.isEmpty()) "" else (normalizeIsoLikeSingle(b) ?: normalizeIsoLikeSingleLoose(b) ?: return null)
+      return "$aNorm/$bNorm"
+    }
+    return null
+  }
+
+  // Normalize timestamp to padded ISO 8601: YYYY-MM-DDThh:mm[:ss][Z|±hh:mm]
+  fun normalizeIso8601TimestampField(input: String?): String? {
+    val s = input?.trim() ?: return null
+    if (s.isEmpty()) return null
+    val re = Regex("^(\\d{4})-(\\d{1,2})-(\\d{1,2})T(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?(Z|[+-]\\d{1,2}:\\d{2})?$")
+    val m = re.matchEntire(s) ?: return null
+    val y = m.groupValues[1]
+    val mo = m.groupValues[2].padStart(2, '0')
+    val d = m.groupValues[3].padStart(2, '0')
+    val hh = m.groupValues[4].padStart(2, '0')
+    val mi = m.groupValues[5].padStart(2, '0')
+    val ss = m.groupValues.getOrNull(6)?.takeIf { it.isNotEmpty() }?.padStart(2, '0')
+    var zone = m.groupValues.getOrNull(7)?.takeIf { it.isNotEmpty() }
+    // Pad zone hour if 1 digit (e.g., +2:00 -> +02:00)
+    if (zone != null && zone != "Z") {
+      val zm = Regex("^([+-])(\\d{1,2}):(\\d{2})$").matchEntire(zone)
+      if (zm != null) zone = zm.groupValues[1] + zm.groupValues[2].padStart(2, '0') + ":" + zm.groupValues[3]
+    }
+    val base = "$y-$mo-$d" + "T" + "$hh:$mi" + (if (ss != null) ":$ss" else "")
+    return base + (zone ?: "")
+  }
+
+  private fun normalizeIsoLikeSingle(s: String): String? {
+    val m = Regex("^(\\d{4})(?:-(\\d{1,2})(?:-(\\d{1,2}))?)?$").matchEntire(s) ?: return null
+    val y = m.groupValues[1]
+    val mm = m.groupValues.getOrNull(2)
+    val dd = m.groupValues.getOrNull(3)
+    return when {
+      mm.isNullOrEmpty() -> y
+      dd.isNullOrEmpty() -> y + "-" + mm.padStart(2, '0')
+      else -> y + "-" + mm.padStart(2, '0') + "-" + dd.padStart(2, '0')
+    }
+  }
+
+  private fun normalizeIsoLikeSingleLoose(s: String): String? {
+    val m = Regex("(\\d{4})(?:-(\\d{1,2})(?:-(\\d{1,2}))?)?").find(s) ?: return null
+    val y = m.groupValues[1]
+    val mm = m.groupValues.getOrNull(2)
+    val dd = m.groupValues.getOrNull(3)
+    return when {
+      mm.isNullOrEmpty() -> y
+      dd.isNullOrEmpty() -> y + "-" + mm.padStart(2, '0')
+      else -> y + "-" + mm.padStart(2, '0') + "-" + dd.padStart(2, '0')
+    }
+  }
   private fun isValidIsbn(raw: String): Boolean {
     val s = raw.uppercase().replace("[^0-9X]".toRegex(), "")
     return when (s.length) {
@@ -232,12 +623,12 @@ import java.io.ByteArrayInputStream
   }
 
   // --- Common field getters ------------------------------------------------
-  private fun yearOf(f: Map<String, String>) = f["year"]?.trim().orEmpty()
-  private fun titleOf(f: Map<String, String>) = (f["title"] ?: f["booktitle"]).orEmpty().trim()
-  private fun journalOf(f: Map<String, String>) = f["journal"]?.trim().orEmpty()
-  private fun publisherOf(f: Map<String, String>) = (f["publisher"] ?: f["institution"]).orEmpty().trim()
-  private fun urlOf(f: Map<String, String>) = f["url"]?.trim().orEmpty()
-  private fun identifierOf(f: Map<String, String>) = (f["doi"] ?: f["isbn"]).orEmpty().trim()
+  private fun yearOf(f: Map<String, String>) = canonicalizeFields(f)["year"]?.trim().orEmpty()
+  private fun titleOf(f: Map<String, String>) = canonicalizeFields(f).let { (it["title"] ?: it["booktitle"]).orEmpty().trim() }
+  private fun journalOf(f: Map<String, String>) = canonicalizeFields(f).let { (it["journaltitle"] ?: it["journal"]).orEmpty().trim() }
+  private fun publisherOf(f: Map<String, String>) = canonicalizeFields(f).let { (it["publisher"] ?: it["institution"]).orEmpty().trim() }
+  private fun urlOf(f: Map<String, String>) = canonicalizeFields(f)["url"]?.trim().orEmpty()
+  private fun identifierOf(f: Map<String, String>) = canonicalizeFields(f).let { (it["doi"] ?: it["isbn"]).orEmpty().trim() }
 
   private fun formatPatentApa(entry: BibEntry): String? {
     val f = entry.fields
@@ -340,20 +731,102 @@ import java.io.ByteArrayInputStream
 
   private fun parseAuthorsToList(authorField: String): List<Pair<String, String?>> {
     if (authorField.isBlank()) return emptyList()
-    return authorField.split(Regex("\\s+and\\s+", RegexOption.IGNORE_CASE))
-      .map { it.trim().trim('{','}') }
-      .filter { it.isNotEmpty() }
-      .map { name ->
-        if ("," in name) {
-          val idx = name.indexOf(',')
-          val family = name.substring(0, idx).trim()
-          val given = name.substring(idx + 1).trim().ifEmpty { null }
-          family to given
-        } else {
-          // Corporate or single-token name
-          name to null
-        }
+    return parseAuthorsToNameParts(authorField).map { np ->
+      val familyFull = listOfNotNull(np.von, np.family).filter { it.isNotBlank() }.joinToString(" ")
+      val famWithJr = if (!np.jr.isNullOrBlank()) "$familyFull, ${np.jr}" else familyFull
+      famWithJr to np.given
+    }
+  }
+
+  data class NameParts(
+    val family: String,
+    val given: String?,
+    val von: String?,
+    val jr: String?,
+    val corporate: Boolean
+  )
+
+  fun parseAuthorsToNameParts(authorField: String): List<NameParts> {
+    if (authorField.isBlank()) return emptyList()
+    val parts = splitAuthorsTopLevel(authorField)
+    val out = mutableListOf<NameParts>()
+    for (raw0 in parts) {
+      val raw = raw0.trim()
+      if (raw.isEmpty()) continue
+      if (hasSingleOuterBraces(raw)) {
+        out += NameParts(family = raw.trim('{', '}'), given = null, von = null, jr = null, corporate = true)
+        continue
       }
+      // Count commas outside braces
+      var depth = 0
+      val commaIdxs = mutableListOf<Int>()
+      for (i in raw.indices) {
+        val c = raw[i]
+        if (c == '{') depth++ else if (c == '}') depth = (depth - 1).coerceAtLeast(0) else if (c == ',' && depth == 0) commaIdxs += i
+      }
+      if (commaIdxs.isEmpty()) {
+        // Given von Family: split tokens brace-aware
+        val tokens = braceAwareSplit(raw)
+        if (tokens.size == 1) {
+          out += NameParts(family = tokens[0], given = null, von = null, jr = null, corporate = false)
+        } else {
+          var i = tokens.lastIndex
+          val familyTokens = mutableListOf<String>()
+          familyTokens.add(tokens[i]); i--
+          // Prepend lowercase tokens as 'von'
+          while (i >= 0 && tokens[i].isNotEmpty() && tokens[i][0].isLowerCase()) { familyTokens.add(0, tokens[i]); i-- }
+          val family = familyTokens.last()
+          val von = if (familyTokens.size > 1) familyTokens.dropLast(1).joinToString(" ") else null
+          val given = if (i >= 0) tokens.subList(0, i + 1).joinToString(" ").trim().ifEmpty { null } else null
+          out += NameParts(family = family, given = given, von = von, jr = null, corporate = false)
+        }
+      } else if (commaIdxs.size == 1) {
+        val idx = commaIdxs[0]
+        val familyAll = raw.substring(0, idx).trim()
+        val given = raw.substring(idx + 1).trim().ifEmpty { null }
+        // In Family, Given form: if family starts with lowercase token(s), treat those as von
+        val famTokens = braceAwareSplit(familyAll)
+        val vonTokens = mutableListOf<String>()
+        var fi = 0
+        while (fi < famTokens.size && famTokens[fi].isNotEmpty() && famTokens[fi][0].isLowerCase()) { vonTokens += famTokens[fi]; fi++ }
+        val family = famTokens.subList(fi, famTokens.size).joinToString(" ")
+        val von = if (vonTokens.isNotEmpty()) vonTokens.joinToString(" ") else null
+        out += NameParts(family = family, given = given, von = von, jr = null, corporate = false)
+      } else {
+        val i0 = commaIdxs[0]; val i1 = commaIdxs[1]
+        val familyAll = raw.substring(0, i0).trim()
+        val jr = raw.substring(i0 + 1, i1).trim().ifEmpty { null }
+        val given = raw.substring(i1 + 1).trim().ifEmpty { null }
+        val famTokens = braceAwareSplit(familyAll)
+        val vonTokens = mutableListOf<String>()
+        var fi = 0
+        while (fi < famTokens.size && famTokens[fi].isNotEmpty() && famTokens[fi][0].isLowerCase()) { vonTokens += famTokens[fi]; fi++ }
+        val family = famTokens.subList(fi, famTokens.size).joinToString(" ")
+        val von = if (vonTokens.isNotEmpty()) vonTokens.joinToString(" ") else null
+        out += NameParts(family = family, given = given, von = von, jr = jr, corporate = false)
+      }
+    }
+    return out
+  }
+
+  private fun braceAwareSplit(s: String): List<String> {
+    val res = mutableListOf<String>()
+    val sb = StringBuilder()
+    var depth = 0
+    var i = 0
+    fun flush() { val tok = sb.toString().trim(); if (tok.isNotEmpty()) res += tok; sb.setLength(0) }
+    while (i < s.length) {
+      val c = s[i]
+      when (c) {
+        '{' -> { depth++; sb.append(c) }
+        '}' -> { depth = (depth - 1).coerceAtLeast(0); sb.append(c) }
+        ' ', '\t', '\n', '\r' -> { if (depth == 0) flush() else sb.append(c) }
+        else -> sb.append(c)
+      }
+      i++
+    }
+    flush()
+    return res
   }
 
   private fun formatAuthorsApa(list: List<Pair<String, String?>>): String {
@@ -985,7 +1458,7 @@ import java.io.ByteArrayInputStream
         val headerType = normalizeType(m.group(1).lowercase())
         val key = m.group(2)
         val body = m.group(3)
-        val fields = parseFields(body)
+        val fields = withDisplayAliases(canonicalizeFields(parseFields(body)))
         val subtype = fields["entrysubtype"]?.trim()?.lowercase()
         val effective = if (headerType == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else headerType
         entries.add(BibEntry(effective, key, fields))
@@ -1007,7 +1480,7 @@ import java.io.ByteArrayInputStream
         val headerType = normalizeType(m.group(1).lowercase())
         val key = m.group(2)
         val body = m.group(3)
-        val fields = parseFields(body)
+        val fields = withDisplayAliases(canonicalizeFields(parseFields(body)))
         val subtype = fields["entrysubtype"]?.trim()?.lowercase()
         val effective = if (headerType == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else headerType
         entries.add(BibEntry(effective, key, fields))
@@ -1021,9 +1494,11 @@ import java.io.ByteArrayInputStream
 
   // Serialize a single entry using alphanumeric field order; values escaped.
   fun serializeEntryAlpha(entry: BibEntry): String {
-    val keys = entry.fields.keys.map { it.trim() }.filter { it.isNotEmpty() }.sorted()
+    // Canonicalize before writing to ensure journaltitle, etc.
+    val canon = canonicalizeFields(entry.fields)
+    val keys = canon.keys.map { it.trim() }.filter { it.isNotEmpty() }.sorted()
     val body = keys.joinToString(separator = ",\n") { k ->
-      val vRaw = entry.fields[k]?.trim().orEmpty()
+      val vRaw = canon[k]?.trim().orEmpty()
       val v = if (k.equals("year", true) && vRaw.isBlank()) "n.d." else vRaw
       "  ${k} = {${escapeBraces(v)}}"
     }
@@ -1073,12 +1548,17 @@ import java.io.ByteArrayInputStream
       // Regex to find existing entry by type+key, across lines; stop at a standalone closing brace line
       val pattern = Pattern.compile("@${Pattern.quote(normalizedType)}\\s*\\{\\s*${Pattern.quote(key)}\\s*,[\\s\\S]*?^\\s*}\\s*\n?", Pattern.MULTILINE)
       val matcher = pattern.matcher(original)
-      val now = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+      val now = try {
+        java.time.OffsetDateTime.now().withNano(0).format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+      } catch (_: Throwable) {
+        // Fallback if offset not available
+        java.time.LocalDateTime.now().withNano(0).format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+      }
       val updated = if (matcher.find()) {
         // Update existing: preserve created if present; always update modified
         val matchText = matcher.group()
         val existingCreated = extractFieldValue(matchText, "created")
-        val fields = entry.fields.toMutableMap()
+        val fields = canonicalizeFields(entry.fields).toMutableMap()
         // If downgraded, preserve UI type in entrysubtype
         if (normalizedType == "misc" && !entrySubType.isNullOrBlank()) fields["entrysubtype"] = entrySubType
         // Ensure year default when absent
@@ -1095,7 +1575,7 @@ import java.io.ByteArrayInputStream
         matcher.replaceFirst(newEntryText)
       } else {
         // New entry: set created and modified to now (override if present)
-        val fields = entry.fields.toMutableMap()
+        val fields = canonicalizeFields(entry.fields).toMutableMap()
         if (normalizedType == "misc" && !entrySubType.isNullOrBlank()) fields["entrysubtype"] = entrySubType
         // Ensure year default when absent
         val yr = fields["year"]?.trim()
@@ -1160,17 +1640,52 @@ import java.io.ByteArrayInputStream
     } catch (_: Throwable) { null }
   }
 
+  // --- crossref/xdata resolution ------------------------------------------
+  // Returns a new list of entries where fields are enriched with crossref/xdata parents.
+  // Missing fields in a child are filled from parents, without overriding explicit child values.
+  fun resolveCrossrefs(entries: List<BibEntry>): List<BibEntry> {
+    if (entries.isEmpty()) return entries
+    val byKey = entries.associateBy { it.key }
+    fun resolveFor(e: BibEntry, seen: MutableSet<String>, depth: Int = 0): Map<String, String> {
+      if (depth > 8) return e.fields // guard against cycles
+      val base = canonicalizeFields(e.fields).toMutableMap()
+      val cref = base["crossref"]?.trim()
+      if (!cref.isNullOrBlank() && cref in byKey && cref !in seen) {
+        seen += cref
+        val parent = byKey[cref]!!
+        val pFields = resolveFor(parent, seen, depth + 1)
+        for ((k, v) in pFields) if (!base.containsKey(k)) base[k] = v
+      }
+      val xdata = base["xdata"]?.trim()
+      if (!xdata.isNullOrBlank()) {
+        // split on commas or 'and'
+        val items = xdata.split(Regex("\\s*(?:,|and)\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
+        for (id in items) {
+          val parent = byKey[id]
+          if (parent != null && id !in seen) {
+            seen += id
+            val pFields = resolveFor(parent, seen, depth + 1)
+            for ((k, v) in pFields) if (!base.containsKey(k)) base[k] = v
+          }
+        }
+      }
+      return base
+    }
+    return entries.map { e -> e.copy(fields = resolveFor(e, mutableSetOf(e.key))) }
+  }
+
   private fun buildFieldsBody(fields: Map<String, String>): String {
-    // Order a few common fields first, then the rest alphabetically
+    // Canonicalize, then order a few common fields first, then the rest alphabetically
+    val canon = canonicalizeFields(fields)
     val priority = listOf(
-      "author", "title", "year", "journal", "booktitle", "publisher", "doi", "url",
+      "author", "title", "year", "journaltitle", "booktitle", "publisher", "doi", "url",
       "source", "verified", "created", "modified"
     )
     val orderedKeys = LinkedHashSet<String>()
-    orderedKeys.addAll(priority.filter { fields.containsKey(it) })
-    orderedKeys.addAll(fields.keys.sorted())
+    orderedKeys.addAll(priority.filter { canon.containsKey(it) })
+    orderedKeys.addAll(canon.keys.sorted())
     return orderedKeys.joinToString(separator = ",\n") { k ->
-      val v = fields[k]?.trim().orEmpty()
+      val v = canon[k]?.trim().orEmpty()
       "  ${k} = {${escapeBraces(v)}}"
     }
   }
@@ -1606,8 +2121,9 @@ import java.io.ByteArrayInputStream
       return hasReporter || hasSlip
     }
     val req = requiredKeysForType(entry.type)
+    val f = canonicalizeFields(entry.fields)
     for (k in req) {
-      val v = entry.fields[k]?.trim().orEmpty()
+      val v = f[canonicalFieldName(k)]?.trim().orEmpty()
       if (v.isEmpty()) return false
       if (k == "year" && !v.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) return false
     }
@@ -1616,8 +2132,8 @@ import java.io.ByteArrayInputStream
 
   // Keep in sync with UI required fields for each type.
   private fun requiredKeysForType(t: String): Set<String> = when (t.lowercase()) {
-    // Scholarly article requires journal and year
-    "article" -> setOf("title", "author", "year", "journal")
+    // Scholarly article requires journaltitle and year (canonical)
+    "article" -> setOf("title", "author", "year", "journaltitle")
     // Book requires publisher and year
     "book" -> setOf("title", "author", "year", "publisher")
     // RFC requires author, title, year
@@ -1943,7 +2459,7 @@ import java.io.ByteArrayInputStream
     val typeHead = normalizeType(m.group(1).lowercase())
     val key = m.group(2)
     val body = m.group(3)
-    val fields = parseFields(body)
+    val fields = withDisplayAliases(canonicalizeFields(parseFields(body)))
     val subtype = fields["entrysubtype"]?.trim()?.lowercase()
     val effective = if (typeHead == "misc" && !subtype.isNullOrBlank()) normalizeType(subtype) else typeHead
     return BibEntry(effective, key, fields)

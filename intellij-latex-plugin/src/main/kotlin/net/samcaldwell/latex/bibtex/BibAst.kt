@@ -25,10 +25,10 @@ data class Field(
 data class ValueExpr(val parts: List<ValuePart>)
 
 sealed class ValuePart {
-  data class Text(val text: String) : ValuePart()
+  data class BracedText(val text: String) : ValuePart()
+  data class QuotedText(val text: String) : ValuePart()
   data class Identifier(val name: String) : ValuePart()
   data class NumberLiteral(val text: String) : ValuePart()
 }
 
 data class ParserError(val message: String, val offset: Int)
-

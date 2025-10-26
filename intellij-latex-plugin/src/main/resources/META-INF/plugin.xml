@@ -28,6 +28,12 @@
 
     <fileTemplateGroup implementation="net.samcaldwell.latex.TexFileTemplates"/>
 
+    <!-- Syntax highlighting and color settings -->
+    <lang.syntaxHighlighterFactory language="LaTeX" implementationClass="net.samcaldwell.latex.TexSyntaxHighlighterFactory"/>
+    <lang.syntaxHighlighterFactory language="BibTeX" implementationClass="net.samcaldwell.latex.BibSyntaxHighlighterFactory"/>
+    <colorSettingsPage implementation="net.samcaldwell.latex.TexColorSettings"/>
+    <colorSettingsPage implementation="net.samcaldwell.latex.BibColorSettings"/>
+
     <projectService serviceImplementation="net.samcaldwell.latex.LatexCompilerService"/>
     <projectService serviceImplementation="net.samcaldwell.latex.BibLibraryService"/>
 

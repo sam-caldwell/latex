@@ -126,7 +126,18 @@ class BibParser(private val source: String) {
       if (match(TokType.COMMA)) { consume(TokType.COMMA); continue }
       if (!match(TokType.IDENT)) { errors += ParserError("Expected field name", lookahead.offset); break }
       val nameTok = consume(TokType.IDENT)
-      if (match(TokType.EQUALS)) consume(TokType.EQUALS) else errors += ParserError("Missing '=' after field name", lookahead.offset)
+      if (match(TokType.EQUALS)) {
+        consume(TokType.EQUALS)
+      } else {
+        // Be resilient: if the raw source between the end of the field name and the next token contains
+        // an '=', do not flag an error (token stream may have skipped it due to whitespace/comments).
+        val nameEnd = nameTok.offset + nameTok.text.length
+        val nextOff = lookahead.offset
+        val sliceHasEq = try {
+          if (nextOff > nameEnd && nextOff <= source.length) source.substring(nameEnd, nextOff).any { it == '=' } else false
+        } catch (_: Throwable) { false }
+        if (!sliceHasEq) errors += ParserError("Missing '=' after field name", lookahead.offset)
+      }
       val (value, valueOffset) = parseValueExpr()
       fields += Field(nameTok.text, value, nameTok.offset, valueOffset)
       // Optional comma after each field
@@ -150,13 +161,13 @@ class BibParser(private val source: String) {
       when {
         match(TokType.QUOTED_STRING) -> {
           val t = consume(TokType.QUOTED_STRING)
-          addPart(ValuePart.Text(t.text), t.offset)
+          addPart(ValuePart.QuotedText(t.text), t.offset)
         }
         match(TokType.LBRACE) -> {
           val pair = lx.readBracedString()
           val (text, off) = if (pair != null) pair else Pair("", lookahead.offset)
           lookahead = lx.nextToken()
-          addPart(ValuePart.Text(text), off)
+          addPart(ValuePart.BracedText(text), off)
         }
         match(TokType.IDENT) -> {
           val t = consume(TokType.IDENT)
@@ -182,7 +193,8 @@ class BibParser(private val source: String) {
       val sb = StringBuilder()
       for (p in v.parts) {
         when (p) {
-          is ValuePart.Text -> sb.append(p.text)
+          is ValuePart.BracedText -> sb.append(p.text)
+          is ValuePart.QuotedText -> sb.append(p.text)
           is ValuePart.Identifier -> sb.append(p.name) // leave macro names as-is
           is ValuePart.NumberLiteral -> sb.append(p.text)
         }
@@ -191,6 +203,19 @@ class BibParser(private val source: String) {
       val unified = sb.toString().replace("\r\n", "\n").replace('\r', '\n')
       return unified.replace(Regex("[ \t]*\n+[ \t]*"), " ").trim()
     }
+
+    fun flattenValueWith(v: ValueExpr, strings: Map<String, String>): String {
+      val sb = StringBuilder()
+      for (p in v.parts) {
+        when (p) {
+          is ValuePart.BracedText -> sb.append(p.text)
+          is ValuePart.QuotedText -> sb.append(p.text)
+          is ValuePart.Identifier -> sb.append(strings[p.name] ?: p.name)
+          is ValuePart.NumberLiteral -> sb.append(p.text)
+        }
+      }
+      val unified = sb.toString().replace("\r\n", "\n").replace('\r', '\n')
+      return unified.replace(Regex("[ \t]*\n+[ \t]*"), " ").trim()
+    }
   }
 }
-

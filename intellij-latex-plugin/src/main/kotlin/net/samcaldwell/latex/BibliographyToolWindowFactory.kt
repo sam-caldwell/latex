@@ -42,7 +42,9 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
     // Validation panel shown directly below main toolbar after Verify runs
     data class VerifyIssue(val display: String, val offset: Int)
     val validationModel = DefaultListModel<VerifyIssue>()
-    val validationList = JList(validationModel)
+    val validationList = JList(validationModel).apply {
+      selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+    }
     var hoverIndex = -1
     validationList.cellRenderer = object : DefaultListCellRenderer() {
       override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): java.awt.Component {
@@ -61,6 +63,56 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         if (idx != hoverIndex) { hoverIndex = idx; validationList.repaint() }
       }
     })
+    // Context menu: Copy selected issue(s) to clipboard
+    run {
+      val popup = JPopupMenu()
+      val copyItem = JMenuItem("Copy")
+      copyItem.addActionListener {
+        val sel = validationList.selectedIndices
+        if (sel != null && sel.size > 0) {
+          val sb = StringBuilder()
+          var first = true
+          for (idx in sel) {
+            if (idx >= 0 && idx < validationModel.size()) {
+              val item = validationModel.getElementAt(idx)
+              val text = item.display
+              if (text.isNotEmpty()) {
+                if (!first) sb.append('\n') else first = false
+                sb.append(text)
+              }
+            }
+          }
+          val out = sb.toString()
+          if (out.isNotEmpty()) {
+            val content = java.awt.datatransfer.StringSelection(out)
+            com.intellij.openapi.ide.CopyPasteManager.getInstance().setContents(content)
+          }
+        } else {
+          val idx = validationList.leadSelectionIndex
+          if (idx >= 0 && idx < validationModel.size()) {
+            val v = validationModel.getElementAt(idx).display
+            val content = java.awt.datatransfer.StringSelection(v)
+            com.intellij.openapi.ide.CopyPasteManager.getInstance().setContents(content)
+          }
+        }
+      }
+      popup.add(copyItem)
+
+      fun showPopup(e: java.awt.event.MouseEvent) {
+        val idx = validationList.locationToIndex(e.point)
+        if (idx >= 0) {
+          val sel = validationList.selectedIndices.toSet()
+          if (idx !in sel) validationList.selectedIndex = idx
+        }
+        popup.show(validationList, e.x, e.y)
+      }
+
+      validationList.addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mousePressed(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger || javax.swing.SwingUtilities.isRightMouseButton(e)) showPopup(e) }
+        override fun mouseReleased(e: java.awt.event.MouseEvent) { if (e.isPopupTrigger) showPopup(e) }
+      })
+    }
+
     validationList.addMouseListener(object : java.awt.event.MouseAdapter() {
       override fun mouseExited(e: java.awt.event.MouseEvent) { if (hoverIndex != -1) { hoverIndex = -1; validationList.repaint() } }
       override fun mouseClicked(e: java.awt.event.MouseEvent) {
@@ -79,6 +131,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       }
     })
     val validationSummary = JLabel("")
+    val statsArea = JTextArea().apply {
+      isEditable = false
+      lineWrap = true
+      wrapStyleWord = true
+      font = javax.swing.UIManager.getFont("Label.font")
+      border = BorderFactory.createEmptyBorder(4, 0, 0, 0)
+    }
+    val statsPanel = JPanel(BorderLayout()).apply {
+      add(JLabel("Statistics"), BorderLayout.NORTH)
+      add(statsArea, BorderLayout.CENTER)
+    }
     val validationContainer = JPanel(BorderLayout()).apply {
       border = BorderFactory.createCompoundBorder(
         BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color(0xE0, 0xE0, 0xE0)),
@@ -86,7 +149,37 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       )
       add(validationSummary, BorderLayout.NORTH)
       add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 120) }, BorderLayout.CENTER)
+      add(statsPanel, BorderLayout.SOUTH)
       isVisible = false
+    }
+
+    fun updateStatsForPath(path: java.nio.file.Path, errors: Int, warnings: Int) {
+      val raw = try { java.nio.file.Files.readString(path) } catch (_: Throwable) { null }
+      if (raw == null) { statsArea.text = ""; return }
+      val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
+      val parsed = parser.parse()
+      // Build string macro map for 'type' field expansion
+      val strings = mutableMapOf<String, String>()
+      for (n in parsed.file.nodes) if (n is net.samcaldwell.latex.bibtex.BibNode.StringDirective) strings[n.name] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(n.value, strings)
+      val entries = parsed.file.nodes.filterIsInstance<net.samcaldwell.latex.bibtex.BibNode.Entry>()
+      val total = entries.size
+      val byHeaderType = entries.groupingBy { it.type.lowercase() }.eachCount().toSortedMap()
+      val byFieldType = entries.mapNotNull { node ->
+        val ft = node.fields.firstOrNull { it.name.equals("type", true) }?.value
+        ft?.let { net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(it, strings).lowercase() }?.takeIf { it.isNotBlank() }
+      }.groupingBy { it }.eachCount().toSortedMap()
+
+      val sb = StringBuilder()
+      sb.append("Records: ").append(total)
+        .append("    Errors: ").append(errors)
+        .append("    Warnings: ").append(warnings)
+        .append('\n')
+      sb.append("By @type:")
+      if (byHeaderType.isEmpty()) sb.append(" none") else for ((t, n) in byHeaderType) sb.append('\n').append("- ").append(t).append(": ").append(n)
+      sb.append('\n')
+      sb.append("By field 'type':")
+      if (byFieldType.isEmpty()) sb.append(" none") else for ((t, n) in byFieldType) sb.append('\n').append("- ").append(t).append(": ").append(n)
+      statsArea.text = sb.toString()
     }
 
     fun runVerifyAndPopulate() {
@@ -113,7 +206,14 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           globalIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${pe.message}", pe.offset))
           errs++
         }
-        // Convert entries to validation form and collect offsets
+        // Collect @string macros for BibLaTeX semantics
+        val stringMap = mutableMapOf<String, String>()
+        for (node in parsed.file.nodes) {
+          if (node is net.samcaldwell.latex.bibtex.BibNode.StringDirective) {
+            stringMap[node.name] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(node.value, stringMap)
+          }
+        }
+        // Convert entries to validation form (with string expansion) and collect offsets
         val entries = mutableListOf<BibLibraryService.BibEntry>()
         val entryOffsets = mutableMapOf<String, MutableList<Int>>()
         val fieldOffsets = mutableMapOf<Pair<String, String>, Int>()
@@ -121,14 +221,30 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
             val map = linkedMapOf<String, String>()
             for (f in node.fields) {
-              val value = net.samcaldwell.latex.bibtex.BibParser.flattenValue(f.value)
-              map[f.name.lowercase()] = value
-              fieldOffsets[node.key to f.name.lowercase()] = f.valueOffset
+              val value = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(f.value, stringMap)
+              val rawName = f.name.lowercase()
+              map[rawName] = value
+              fieldOffsets[node.key to rawName] = f.valueOffset
+              // Also record canonical alias offset (e.g., journaltitle for journal)
+              runCatching {
+                val svc = project.getService(BibLibraryService::class.java)
+                val canon = svc.canonicalFieldName(rawName)
+                fieldOffsets[node.key to canon] = f.valueOffset
+              }
             }
-            entries += BibLibraryService.BibEntry(node.type.lowercase(), node.key, map)
+            // Effective type semantics: misc + entrysubtype -> normalized subtype; else normalize header type
+            val headerTypeNorm = try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, node.type.lowercase()) as String } catch (_: Throwable) { node.type.lowercase() }
+            val subtype = map["entrysubtype"]?.trim()?.lowercase()
+            val effType = if (headerTypeNorm == "misc" && !subtype.isNullOrBlank()) {
+              try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, subtype) as String } catch (_: Throwable) { subtype!! }
+            } else headerTypeNorm
+            val canonMap = try { svc.canonicalizeFields(map) } catch (_: Throwable) { map }
+            entries += BibLibraryService.BibEntry(effType, node.key, canonMap)
             entryOffsets.computeIfAbsent(node.key) { mutableListOf() }.add(node.headerOffset)
           }
         }
+        // Resolve crossref/xdata to enrich fields before semantic validation
+        val entriesResolved = try { svc.resolveCrossrefs(entries) } catch (_: Throwable) { entries }
         // Duplicates per key
         val dups = entries.groupBy { it.key }.filter { it.value.size > 1 }
         for ((key, list) in dups) {
@@ -140,7 +256,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             errs++
           }
         }
-        // Disallowed types
+        // Disallowed types (by header after normalization)
         for (node in parsed.file.nodes) {
           if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
             val tNorm = try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, node.type.lowercase()) as String } catch (_: Throwable) { node.type.lowercase() }
@@ -153,8 +269,23 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             }
           }
         }
+        // Formatting: require brace-wrapped field values at top level
+        run {
+          for (node in parsed.file.nodes) if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
+            for (f in node.fields) {
+              val v = f.value
+              val parts = v.parts
+              val bracedTop = parts.size == 1 && parts[0] is net.samcaldwell.latex.bibtex.ValuePart.BracedText
+              if (!bracedTop) {
+                val lc = parser.toLineCol(f.valueOffset)
+                perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${f.name} – expected brace-wrapped value: {…} [${node.key}]", f.valueOffset))
+                errs++
+              }
+            }
+          }
+        }
         // Semantic field validation
-        for (e in entries) {
+        for (e in entriesResolved) {
           val problems = svc.validateEntryDetailed(e)
           for (p in problems) {
             val name = p.field.lowercase()
@@ -176,6 +307,12 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       validationModel.clear()
       for (gi in globalIssues) validationModel.addElement(gi)
       for (ei in perEntryIssues) validationModel.addElement(ei)
+      // Update statistics panel using the parsed file
+      runCatching {
+        val errCount = globalIssues.size + perEntryIssues.count { it.display.contains(" ERROR:") }
+        val warnCount = perEntryIssues.count { it.display.contains(" WARNING:") }
+        updateStatsForPath(path, errors = errCount, warnings = warnCount)
+      }
       validationContainer.isVisible = true
       validationContainer.revalidate(); validationContainer.repaint()
     }
@@ -208,23 +345,114 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           }
         } catch (_: Throwable) { }
 
-        // 3) Read entries from .bak
+        // 3) Parse backup via recursive-descent parser; abort on syntax errors
         val raw = try { java.nio.file.Files.readString(bak) } catch (t: Throwable) {
           result.set("Failed to read backup: ${t.message}"); return@runProcessWithProgressSynchronously }
-        val entries0 = svc.readEntriesFromString(raw)
-        // Build the union of all field names across records
-        val allKeys = entries0.flatMap { it.fields.keys }.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-        val entries = entries0.map { e ->
-          val f = e.fields.toMutableMap()
-          // Add any missing fields with empty value
-          for (k in allKeys) if (!f.containsKey(k)) f[k] = ""
-          // Ensure year default if blank
-          val yr = f["year"]?.trim()
-          if (yr.isNullOrEmpty()) f["year"] = "n.d."
-          e.copy(fields = f)
+        val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
+        val parsed = parser.parse()
+        if (parsed.errors.isNotEmpty()) {
+          val sb = StringBuilder("Reformat aborted due to syntax errors:\n")
+          for (e in parsed.errors.take(50)) {
+            val (ln, col) = parser.toLineCol(e.offset)
+            sb.append("- ").append(ln).append(":").append(col).append(" ").append(e.message).append('\n')
+          }
+          result.set(sb.toString())
+          return@runProcessWithProgressSynchronously
+        }
+        // Collect @string macros for value expansion
+        val strings = mutableMapOf<String, String>()
+        for (n in parsed.file.nodes) if (n is net.samcaldwell.latex.bibtex.BibNode.StringDirective) strings[n.name] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(n.value, strings)
+        // Convert AST entries into BibEntries with normalized/allowed types
+        val entries0 = mutableListOf<BibLibraryService.BibEntry>()
+        for (node in parsed.file.nodes) {
+          if (node is net.samcaldwell.latex.bibtex.BibNode.Entry) {
+            val fieldMap = linkedMapOf<String, String>()
+            for (f in node.fields) fieldMap[f.name.lowercase()] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(f.value, strings)
+            val headerTypeNorm = try { svc.javaClass.getDeclaredMethod("normalizeType", String::class.java).apply { isAccessible = true }.invoke(svc, node.type.lowercase()) as String } catch (_: Throwable) { node.type.lowercase() }
+            // Map to allowed type set, preserving original UI subtype into entrysubtype when necessary
+            val mapped: Pair<String, String?> = try {
+              val mth = svc.javaClass.getDeclaredMethod("mapToAllowedForWrite", String::class.java)
+              mth.isAccessible = true
+              @Suppress("UNCHECKED_CAST")
+              mth.invoke(svc, headerTypeNorm) as Pair<String, String?>
+            } catch (_: Throwable) {
+              // Fallback if reflection fails
+              val allowed = BibLibraryService.ALLOWED_BIBLATEX_TYPES
+              if (allowed.contains(headerTypeNorm)) Pair(headerTypeNorm, null) else Pair("misc", headerTypeNorm)
+            }
+            val typeForWrite = mapped.first
+            val entrySub = mapped.second
+            if (typeForWrite == "misc" && !entrySub.isNullOrBlank()) fieldMap["entrysubtype"] = entrySub
+            // Ensure year default
+            val yr = fieldMap["year"]?.trim(); if (yr.isNullOrEmpty()) fieldMap["year"] = "n.d."
+            entries0 += BibLibraryService.BibEntry(typeForWrite, node.key, fieldMap)
+          }
+        }
+        // Resolve crossref/xdata to enrich entries before adding missing fields
+        val entriesResolved = try { svc.resolveCrossrefs(entries0) } catch (_: Throwable) { entries0 }
+        // Add only missing fields appropriate for the given citation context
+        fun expectedKeysForContext(contextType: String): Set<String> {
+          // Try service.requiredKeysForType via reflection
+          return try {
+            val m = svc.javaClass.getDeclaredMethod("requiredKeysForType", String::class.java)
+            m.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            m.invoke(svc, contextType) as Set<String>
+          } catch (_: Throwable) {
+            // Fallback minimal set
+            when (contextType.lowercase()) {
+              "article" -> setOf("title", "author", "year", "journaltitle")
+              "book" -> setOf("title", "author", "year", "publisher")
+              "inproceedings", "conference paper" -> setOf("title", "author", "year")
+              "patent" -> setOf("title", "author", "year", "publisher", "doi")
+              "website", "online" -> setOf("title", "publisher", "url")
+              else -> setOf("title")
+            }
+          }
         }
 
-        // 4) Sort by type, author, title, year
+        val entries = entriesResolved.map { e ->
+          val f = e.fields.toMutableMap()
+          // Normalize BibLaTeX date fields to canonical forms
+          runCatching {
+            fun norm(name: String) {
+              val v = f[name]
+              val n = svc.normalizeBiblatexDateField(v)
+              if (n != null) f[name] = n
+            }
+            norm("date"); norm("eventdate"); norm("origdate"); norm("urldate");
+            // Metadata timestamps normalized separately
+            fun normTs(name: String) {
+              val v = f[name]
+              val n = svc.normalizeIso8601TimestampField(v)
+              if (n != null) f[name] = n
+            }
+            normTs("created"); normTs("modified"); normTs("timestamp")
+            // Normalize URL per RFC 3986 if possible
+            run {
+              val uv = f["url"]
+              if (uv != null) {
+                val nu = svc.normalizeHttpUrlRfc3986(uv)
+                if (nu != null) f["url"] = nu
+              }
+            }
+          }
+          // Determine context type: prefer field 'type', else entrysubtype for misc, else header type
+          val fieldType = f["type"]?.trim()?.lowercase()
+          val subtype = f["entrysubtype"]?.trim()?.lowercase()
+          val contextType = when {
+            !fieldType.isNullOrBlank() -> fieldType
+            e.type.lowercase() == "misc" && !subtype.isNullOrBlank() -> subtype!!
+            else -> e.type.lowercase()
+          }
+          // Add only those required for the context
+          val expected = expectedKeysForContext(contextType)
+          for (k in expected) if (!f.containsKey(k)) f[k] = if (k.equals("year", true)) "n.d." else ""
+          // Ensure year default if blank
+          val yr = f["year"]?.trim(); if (yr.isNullOrEmpty()) f["year"] = "n.d."
+          e.copy(fields = f)
+        }
+        // 4) Sort by type, author, title, year (year numeric if possible)
         val sorted = entries.sortedWith(compareBy(
           { it.type.lowercase() },
           { it.fields["author"]?.lowercase().orEmpty() },
@@ -232,8 +460,28 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           { java.util.regex.Pattern.compile("\\b(\\d{4})\\b").matcher(it.fields["year"].orEmpty()).let { m -> if (m.find()) m.group(1) else "n.d." } }
         ))
 
-        // 5) Serialize with alphanumeric field order and write with lock + truncate
+        // 5) Serialize directives and entries with context-aware formatting
+        fun serializeStringDirective(d: net.samcaldwell.latex.bibtex.BibNode.StringDirective): String {
+          val v = net.samcaldwell.latex.bibtex.BibParser.flattenValue(d.value)
+          return "@string{" + d.name + " = {" + v.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") + "}}\n\n"
+        }
+        fun serializePreamble(d: net.samcaldwell.latex.bibtex.BibNode.PreambleDirective): String {
+          val v = net.samcaldwell.latex.bibtex.BibParser.flattenValue(d.value)
+          return "@preamble{" + v.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") + "}\n\n"
+        }
+        fun serializeComment(d: net.samcaldwell.latex.bibtex.BibNode.CommentDirective): String {
+          val v = d.text
+          return "@comment{" + v + "}\n\n"
+        }
         val sb = StringBuilder()
+        // Emit non-entry directives in original order
+        for (n in parsed.file.nodes) when (n) {
+          is net.samcaldwell.latex.bibtex.BibNode.StringDirective -> sb.append(serializeStringDirective(n))
+          is net.samcaldwell.latex.bibtex.BibNode.PreambleDirective -> sb.append(serializePreamble(n))
+          is net.samcaldwell.latex.bibtex.BibNode.CommentDirective -> sb.append(serializeComment(n))
+          else -> {}
+        }
+        // Then emit sorted entries with alphanumeric field order
         for (e in sorted) sb.append(svc.serializeEntryAlpha(e))
         val bytes = sb.toString().toByteArray(java.nio.charset.StandardCharsets.UTF_8)
         try {
@@ -256,6 +504,8 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         } catch (_: Throwable) { }
 
         result.set("Reformatted ${sorted.size} entr" + if (sorted.size == 1) "y" else "ies")
+        // Update statistics panel after successful reformat
+        updateStatsForPath(path, errors = 0, warnings = 0)
       }, "Reformatting", false, project)
 
       val msg = result.get()
@@ -645,22 +895,29 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
       // Title: display width limited to 64 characters (visual width only)
       titleField.columns = 64
 
-      // Year: limit to 4 characters and digits only, set visual width to 4
+      // Year: limit to 4 characters; allow 4 digits or the literal 'n.d.'
       yearField.columns = 4
       (yearField.document as? javax.swing.text.AbstractDocument)?.documentFilter = object : javax.swing.text.DocumentFilter() {
         override fun insertString(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, string: String?, attr: javax.swing.text.AttributeSet?) {
           if (string == null) return
-          val filtered = string.filter { it.isDigit() }
-          val newLen = fb.document.length + filtered.length
-          if (filtered.isNotEmpty() && newLen <= 4) super.insertString(fb, offset, filtered, attr)
+          val current = fb.document.getText(0, fb.document.length)
+          val candidate = (current.substring(0, offset) + string + current.substring(offset))
+          if (isYearCandidate(candidate)) super.insertString(fb, offset, string, attr)
         }
         override fun replace(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, length: Int, text: String?, attrs: javax.swing.text.AttributeSet?) {
           val current = fb.document.getText(0, fb.document.length)
           val prefix = current.substring(0, offset)
           val suffix = current.substring(offset + length)
-          val t = (text ?: "").filter { it.isDigit() }
-          val candidate = (prefix + t + suffix)
-          if (candidate.length <= 4) super.replace(fb, offset, length, t, attrs)
+          val candidate = (prefix + (text ?: "") + suffix)
+          if (isYearCandidate(candidate)) super.replace(fb, offset, length, text, attrs)
+        }
+        private fun isYearCandidate(s: String): Boolean {
+          if (s.length > 4) return false
+          if (s.isEmpty()) return true
+          if (s.all { it.isDigit() }) return true
+          val nd = "n.d."
+          val prefixOk = nd.startsWith(s, ignoreCase = true)
+          return prefixOk
         }
       }
 
@@ -943,7 +1200,10 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     }
     if ("title" in allowed) putIfNotEmpty("title", titleField)
     if ("year" in allowed) putIfNotEmpty("year", yearField)
-    if ("journal" in allowed) putIfNotEmpty("journal", journalField)
+    if ("journal" in allowed) {
+      val v = journalField.text.trim()
+      if (v.isNotEmpty()) fields["journaltitle"] = v
+    }
     if ("publisher" in allowed) putIfNotEmpty("publisher", publisherField)
     if ("doi" in allowed) {
       val idVal = doiField.text.trim()
@@ -1148,7 +1408,7 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
         m?.groupValues?.getOrNull(1) ?: ""
       } ?: ""
       yearField.text = yr
-      journalField.text = e.fields["journal"] ?: ""
+      journalField.text = (e.fields["journaltitle"] ?: e.fields["journal"]) ?: ""
       // If legacy entries have only booktitle, surface it as title
       publisherField.text = e.fields["publisher"] ?: ""
       // Combined DOI/ISBN display: prefer ISBN for books, DOI otherwise
@@ -1514,8 +1774,10 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     val yearVal = yearField.text.trim()
     val yearRequired = "year" in required
     if (yearRequired && yearVal.isEmpty()) { flagError("year", yearField, "Year is required"); valid = false }
-    else if (yearVal.isNotEmpty() && !yearVal.matches(Regex("\\d{4}"))) { flagError("year", yearField, "Year must be 4 digits"); valid = false }
+    else if (yearVal.isNotEmpty() && !yearVal.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) { flagError("year", yearField, "Year must be 4 digits or n.d."); valid = false }
     else clearError(yearField, "year")
+
+    // No date field on main form; validation happens in details dialog
 
     // Journal
     if ("journal" in visible) {
@@ -1554,9 +1816,9 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     // URL format
     val urlVal = urlField.text.trim()
     val urlOk = if (urlVal.isEmpty()) true else try {
-      (urlVal.startsWith("http://") || urlVal.startsWith("https://")) && java.net.URI(urlVal).isAbsolute
+      project.getService(BibLibraryService::class.java).isValidHttpUrlRfc3986(urlVal)
     } catch (_: Throwable) { false }
-    if (!urlOk) { flagError("url", urlField, "URL must start with http:// or https://") ; valid = false } else clearError(urlField, "url")
+    if (!urlOk) { flagError("url", urlField, "URL must be http://, https://, or ftp:// and absolute") ; valid = false } else clearError(urlField, "url")
 
     // No metadata fields on the main form
 
@@ -1923,7 +2185,8 @@ private fun currentUserName(): String {
         setOrRemove("author", row.author)
         setOrRemove("title", row.title)
         setOrRemove("year", row.year)
-        setOrRemove("journal", row.journal)
+        // Store as canonical journaltitle
+        setOrRemove("journaltitle", row.journal)
         setOrRemove("publisher", row.publisher)
         setOrRemove("doi", row.doi)
         setOrRemove("url", row.url)
@@ -2066,7 +2329,7 @@ private fun currentUserName(): String {
     var title: String = entry.fields["title"] ?: entry.fields["booktitle"] ?: ""
     var author: String = entry.fields["author"] ?: ""
     var year: String = entry.fields["year"] ?: ""
-    var journal: String = entry.fields["journal"] ?: ""
+    var journal: String = (entry.fields["journaltitle"] ?: entry.fields["journal"]) ?: ""
     var publisher: String = entry.fields["publisher"] ?: ""
     var doi: String = entry.fields["doi"] ?: ""
     var url: String = entry.fields["url"] ?: ""
@@ -2087,6 +2350,14 @@ private fun currentUserName(): String {
     val issues = svc.validateEntryDetailed(entry)
     val map = mutableMapOf<String, MutableList<BibLibraryService.ValidationIssue>>()
     for (i in issues) map.computeIfAbsent(i.field) { mutableListOf() }.add(i)
+    // Add display aliases so table columns map cleanly (e.g., journaltitle -> journal)
+    fun alias(src: String, dst: String) {
+      val list = map[src]
+      if (list != null && list.isNotEmpty()) map.computeIfAbsent(dst) { mutableListOf() }.addAll(list)
+    }
+    alias("journaltitle", "journal")
+    alias("location", "address")
+    alias("institution", "school")
     return map
   }
 
@@ -2239,7 +2510,7 @@ private fun currentUserName(): String {
       }
       yearField.text = (e.fields["year"] ?: "").let { s -> Regex("\\b(\\d{4})\\b").find(s)?.groupValues?.getOrNull(1) ?: "" }
       dateField.text = e.fields["date"] ?: ""
-      journalField.text = e.fields["journal"] ?: ""
+      journalField.text = (e.fields["journaltitle"] ?: e.fields["journal"]) ?: ""
       publisherField.text = e.fields["publisher"] ?: ""
       // Court case fields
       reporterVolumeField.text = e.fields["reporter_volume"] ?: ""
@@ -2295,14 +2566,41 @@ private fun currentUserName(): String {
         row++
       }
       addRow("Type", typeField, columns = 3)
-      // Date row (used primarily for Patents)
-      run {
-        val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
-        panel.add(dateLabel, lc)
-        val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 3 }
-        panel.add(dateField, fc)
-        row++
+    // Date row (used primarily for Patents)
+    run {
+      val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
+      panel.add(dateLabel, lc)
+      val fc = GridBagConstraints().apply { gridx = 1; gridy = row; insets = Insets(4,6,4,6); fill = GridBagConstraints.HORIZONTAL; weightx = 1.0; gridwidth = 3 }
+      // Date input filter: allow YYYY-MM-DD or 'n.d.' with progressive typing
+      (dateField.document as? javax.swing.text.AbstractDocument)?.documentFilter = object : javax.swing.text.DocumentFilter() {
+        override fun insertString(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, string: String?, attr: javax.swing.text.AttributeSet?) {
+          if (string == null) return
+          val cur = fb.document.getText(0, fb.document.length)
+          val cand = cur.substring(0, offset) + string + cur.substring(offset)
+          if (isDateCandidate(cand)) super.insertString(fb, offset, string, attr)
+        }
+        override fun replace(fb: javax.swing.text.DocumentFilter.FilterBypass, offset: Int, length: Int, text: String?, attrs: javax.swing.text.AttributeSet?) {
+          val cur = fb.document.getText(0, fb.document.length)
+          val cand = cur.substring(0, offset) + (text ?: "") + cur.substring(offset + length)
+          if (isDateCandidate(cand)) super.replace(fb, offset, length, text, attrs)
+        }
+        private fun isDateCandidate(s: String): Boolean {
+          if (s.isEmpty()) return true
+          val nd = "n.d."
+          if (nd.startsWith(s, ignoreCase = true)) return true
+          if (s.length > 10) return false
+          for (i in s.indices) {
+            val c = s[i]
+            if (i == 4 || i == 7) {
+              if (c != '-') return false
+            } else if (!c.isDigit()) return false
+          }
+          return true
+        }
       }
+      panel.add(dateField, fc)
+      row++
+    }
       // Author input row: person vs corporate
       run {
         val lc = GridBagConstraints().apply { gridx = 0; gridy = row; weightx = 0.0; insets = Insets(4,6,4,6); anchor = GridBagConstraints.WEST }
@@ -2845,7 +3143,7 @@ private fun currentUserName(): String {
         if (yearTxt.isEmpty() && dateField.text.trim().isNotEmpty()) {
           Regex("(19|20)\\d{2}").find(dateField.text)?.value?.let { y -> yearTxt = y; yearField.text = y }
         }
-        if (!yearTxt.matches(Regex("\\d{4}"))) errs += "Year is required (4 digits)"
+        if (!yearTxt.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) errs += "Year is required (4 digits or n.d.)"
         val vol = reporterVolumeField.text.trim()
         val rep = reporterAbbrevField.text.trim()
         val first = firstPageField.text.trim()
@@ -2880,8 +3178,10 @@ private fun currentUserName(): String {
           val has = (0 until authorsModel.size()).any { true } || authorFamilyField.text.trim().isNotEmpty() || authorGivenField.text.trim().isNotEmpty()
           if (!has) errs += "At least one inventor is required"
         }
-        // Date required (free-form, but non-empty)
-        if (dateField.text.trim().isEmpty()) errs += "Date is required (issue/filing/publication date)"
+        // Date required: must be YYYY-MM-DD or n.d.
+        val dateVal = dateField.text.trim()
+        if (dateVal.isEmpty()) errs += "Date is required (issue/filing/publication date)"
+        else if (!dateVal.matches(Regex("(\\d{4}-\\d{2}-\\d{2}|(?i)n\\.d\\.)"))) errs += "Date must be YYYY-MM-DD or n.d."
         // Ensure year present and 4 digits; auto-extract from date if missing
         var yearTxt = yearField.text.trim()
         if (yearTxt.isEmpty()) {
@@ -2891,7 +3191,7 @@ private fun currentUserName(): String {
             yearField.text = yearTxt
           }
         }
-        if (!yearTxt.matches(Regex("\\d{4}"))) errs += "Year is required (4 digits)"
+        if (!yearTxt.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) errs += "Year is required (4 digits or n.d.)"
         // Issuing authority (publisher) required
         if (publisherField.text.trim().isEmpty()) errs += "Issuing authority is required"
         // Patent identifier required, must contain some digits
@@ -2930,7 +3230,7 @@ private fun currentUserName(): String {
       setOrRemove("year", yearField.text.trim())
       setOrRemove("date", dateField.text.trim())
       val tSel = (typeField.selectedItem as? String)?.toString()?.lowercase()?.trim() ?: origType
-      if (tSel != "website") setOrRemove("journal", journalField.text.trim()) else baseFields.remove("journal")
+      if (tSel != "website") setOrRemove("journaltitle", journalField.text.trim()) else { baseFields.remove("journaltitle"); baseFields.remove("journal") }
       setOrRemove("publisher", publisherField.text.trim())
       // Save combined DOI/ISBN to the appropriate field
       val idVal = doiField.text.trim()
