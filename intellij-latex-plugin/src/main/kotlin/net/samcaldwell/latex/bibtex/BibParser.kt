@@ -129,14 +129,19 @@ class BibParser(private val source: String) {
       if (match(TokType.EQUALS)) {
         consume(TokType.EQUALS)
       } else {
-        // Be resilient: if the raw source between the end of the field name and the next token contains
-        // an '=', do not flag an error (token stream may have skipped it due to whitespace/comments).
-        val nameEnd = nameTok.offset + nameTok.text.length
-        val nextOff = lookahead.offset
-        val sliceHasEq = try {
-          if (nextOff > nameEnd && nextOff <= source.length) source.substring(nameEnd, nextOff).any { it == '=' } else false
-        } catch (_: Throwable) { false }
-        if (!sliceHasEq) errors += ParserError("Missing '=' after field name", lookahead.offset)
+        // Be resilient: allow implicit '=' when next token clearly begins a value.
+        // This avoids false positives in the presence of odd whitespace or lexer quirks.
+        val valueLikely = lookahead.type in setOf(TokType.LBRACE, TokType.QUOTED_STRING, TokType.NUMBER, TokType.IDENT)
+        if (!valueLikely) {
+          // As a last resort, inspect raw slice for '='
+          val nameEnd = nameTok.offset + nameTok.text.length
+          val nextOff = lookahead.offset
+          val sliceHasEq = try {
+            if (nextOff > nameEnd && nextOff <= source.length) source.substring(nameEnd, nextOff).any { it == '=' } else false
+          } catch (_: Throwable) { false }
+          if (!sliceHasEq) errors += ParserError("Missing '=' after field name", lookahead.offset)
+        }
+        // If valueLikely, proceed without consuming '='; parseValueExpr will read starting at current lookahead.
       }
       val (value, valueOffset) = parseValueExpr()
       fields += Field(nameTok.text, value, nameTok.offset, valueOffset)
