@@ -124,7 +124,18 @@ class BibParser(private val source: String) {
     while (!match(TokType.RBRACE) && !match(TokType.RPAREN) && lookahead.type != TokType.EOF) {
       // Allow trailing commas
       if (match(TokType.COMMA)) { consume(TokType.COMMA); continue }
-      if (!match(TokType.IDENT)) { errors += ParserError("Expected field name", lookahead.offset); break }
+      if (!match(TokType.IDENT)) {
+        // Graceful recovery: allow stray commas or early closers without error; otherwise skip until a sensible boundary
+        if (match(TokType.RBRACE) || match(TokType.RPAREN) || lookahead.type == TokType.EOF) break
+        if (match(TokType.COMMA)) { consume(TokType.COMMA); continue }
+        // Skip ahead to next IDENT/COMMA/closer to avoid false positives inside braced text
+        var steps = 0
+        while (!(match(TokType.IDENT) || match(TokType.COMMA) || match(TokType.RBRACE) || match(TokType.RPAREN) || lookahead.type == TokType.EOF) && steps < 1024) {
+          lookahead = lx.nextToken(); steps++
+        }
+        if (match(TokType.COMMA)) { consume(TokType.COMMA); continue }
+        if (!match(TokType.IDENT)) break
+      }
       val nameTok = consume(TokType.IDENT)
       if (match(TokType.EQUALS)) {
         consume(TokType.EQUALS)
