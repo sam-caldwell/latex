@@ -63,6 +63,9 @@
                              displayName="LaTeX Tools (Lookup Providers)"
                              instance="net.samcaldwell.latex.LookupProvidersConfigurable"/>
     <notificationGroup id="LaTeX" displayType="BALLOON" isLogByDefault="true"/>
+
+    <!-- Background parser/validator for BibTeX files: underline issues in editor -->
+    <externalAnnotator language="BibTeX" implementationClass="net.samcaldwell.latex.bibtex.BibExternalAnnotator"/>
   </extensions>
 
   <actions>

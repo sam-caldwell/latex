@@ -26,13 +26,8 @@ import java.io.ByteArrayInputStream
   private val log = Logger.getInstance(BibLibraryService::class.java)
 
   companion object {
-    val ALLOWED_BIBLATEX_TYPES: Set<String> = run {
-      val core = net.samcaldwell.latex.bibtex.BiblatexModel.allowedTypes
-      val synonyms = setOf("conference", "electronic", "mastersthesis", "phdthesis", "techreport")
-      val customs = setOf("customa","customb","customc","customd","custome","customf")
-      val domains = setOf("artwork","audio","bibnote","commentary","image","jurisdiction","legislation","legal","letter","movie","music","performance","review","standard","video")
-      (core + synonyms + customs + domains)
-    }
+    // Authoritative set of types comes from the code model
+    val ALLOWED_BIBLATEX_TYPES: Set<String> = net.samcaldwell.latex.bibtex.BiblatexModel.allowedTypes
     val NONENTRY_DIRECTIVES: Set<String> = setOf("string", "preamble", "comment")
   }
 
@@ -194,10 +189,18 @@ import java.io.ByteArrayInputStream
       }
     }
 
-    val url = valOf("url")
-    if (url.isNotEmpty()) {
-      val ok = isValidHttpUrlRfc3986(url)
-      if (!ok) err("url", "Invalid URL (RFC 3986): must be http/https/ftp, absolute, and correctly percent-encoded")
+    // Validate all URL-like fields against RFC 3986
+    run {
+      for ((k, v) in f) {
+        val key = k.lowercase().trim()
+        if (key == "url" || key.endsWith("url")) {
+          val valStr = v.trim()
+          if (valStr.isNotEmpty()) {
+            val ok = isValidHttpUrlRfc3986(valStr)
+            if (!ok) err(key, "Invalid URL (RFC 3986): must be http/https/ftp, absolute, and correctly percent-encoded")
+          }
+        }
+      }
     }
 
     fun checkBiblatexDate(field: String) {
@@ -262,6 +265,23 @@ import java.io.ByteArrayInputStream
     checkSpell("title"); checkSpell("journaltitle"); checkSpell("publisher"); checkSpell("abstract");
 
     return issues
+  }
+
+  // Validate an entry against full library context (crossref/xdata inheritance, aliases, etc.).
+  // This mirrors Verify semantics so UI pre-save uses the same rules as Verify/Reformat.
+  fun validateEntryInContext(entry: BibEntry): List<ValidationIssue> {
+    return try {
+      val all = readEntries().toMutableList()
+      // Remove any existing entries with the same key to let the candidate take precedence
+      val filtered = all.filterNot { it.key == entry.key }.toMutableList()
+      filtered += entry
+      val resolved = resolveCrossrefs(filtered)
+      val eff = resolved.firstOrNull { it.key == entry.key } ?: entry
+      validateEntryDetailed(eff)
+    } catch (_: Throwable) {
+      // Fallback to simple validation if context resolution fails
+      validateEntryDetailed(entry)
+    }
   }
 
   // --- BibLaTeX author field validation ----------------------------------
@@ -1640,18 +1660,19 @@ import java.io.ByteArrayInputStream
   }
 
   private fun normalizeType(t: String): String = when (t.lowercase().trim()) {
-    // Historical/legacy synonyms seen in older plugin versions
-    "music" -> "song"
-    // Common BibLaTeX synonyms
+    // Map common BibTeX-style and legacy synonyms to BibLaTeX canonical types
     "conference" -> "inproceedings"
-    "electronic" -> "online"
-    "phd thesis", "phd-thesis" -> "phdthesis"
-    "masters thesis", "master's thesis", "masters-thesis" -> "mastersthesis"
-    "tech report", "technical report" -> "techreport"
-    "website", "web" -> "online"
-    "movie/film" -> "movie"
-    "tv/radio broadcast" -> "video"
+    "electronic", "website", "web" -> "online"
+    "phdthesis", "phd thesis", "phd-thesis" -> "thesis"
+    "mastersthesis", "masters thesis", "master's thesis", "masters-thesis" -> "thesis"
+    "techreport", "tech report", "technical report" -> "report"
     else -> t.lowercase().trim()
+  }
+
+  // Public canonicalization for UI: normalize aliases, then coerce to allowed model type or fallback to misc
+  fun canonicalUiType(t: String): String {
+    val n = normalizeType(t)
+    return if (ALLOWED_BIBLATEX_TYPES.contains(n)) n else "misc"
   }
 
   // Minimal required set derivation from the biblatex model (AllOf-only; AnyOf handled in validateEntryDetailed)
@@ -2182,34 +2203,13 @@ import java.io.ByteArrayInputStream
     return true
   }
 
-  // Keep in sync with UI required fields for each type.
-  private fun requiredKeysForType(t: String): Set<String> = when (t.lowercase()) {
-    // Scholarly article requires journaltitle and year (canonical)
+  // Keep in sync with UI required fields (constrained to biblatex model types only)
+  private fun requiredKeysForType(t: String): Set<String> = when (canonicalUiType(t)) {
     "article" -> setOf("title", "author", "year", "journaltitle")
-    // Book requires publisher and year
     "book" -> setOf("title", "author", "year", "publisher")
-    // RFC requires author, title, year
-    "rfc" -> setOf("title", "author", "year")
-    // Proceedings: require author, title, year
-    "inproceedings", "conference paper" -> setOf("title", "author", "year")
-    // Media types
-    "movie/film", "video" -> setOf("title", "author", "year", "publisher")
-    "song" -> setOf("title", "author", "year", "publisher")
-    "tv/radio broadcast" -> setOf("title", "author", "year", "publisher")
-    "speech" -> setOf("title", "author", "year")
-    // Thesis/report/dictionary entry: require author, title, year, publisher
-    "thesis (or dissertation)", "report", "dictionary entry" -> setOf("title", "author", "year", "publisher")
-    // NIST standards: title, year, publisher (NIST); authors optional
-    "nist" -> setOf("title", "year", "publisher")
-    // Patent: inventor(s), year/date, issuing authority, identifier
-    "patent" -> setOf("title", "author", "year", "publisher", "doi")
-    // Journal document type (non-article) require author, title, year
-    "journal" -> setOf("title", "author", "year")
-    // Legislation/regulation: title, year, publisher (issuing body)
-    "legislation", "regulation" -> setOf("title", "year", "publisher")
-    // Court case: minimally require title; rest validated by style formatter
-    "court case" -> setOf("title")
-    // Misc and others: title only
+    "inproceedings" -> setOf("title", "author", "year")
+    "online" -> setOf("title", "url")
+    "patent" -> setOf("title", "author", "year")
     else -> setOf("title")
   }
 

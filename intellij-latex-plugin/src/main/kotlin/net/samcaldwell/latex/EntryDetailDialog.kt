@@ -98,6 +98,10 @@ class EntryDetailDialog(
   private val formatCombo = JComboBox(arrayOf("APA 7", "MLA", "Chicago", "IEEE"))
   private val copyCitationBtn = JButton("Copy Citation")
   private val previewArea = JTextArea().apply { isEditable = false; lineWrap = true; wrapStyleWord = true; rows = 4 }
+  private val typeHintLabel = JLabel("").apply {
+    foreground = Color(0x66, 0x66, 0x66)
+    font = font.deriveFont(java.awt.Font.ITALIC)
+  }
   private val defaultBorders = mutableMapOf<JComponent, javax.swing.border.Border?>()
   private fun trackBorder(c: JComponent) { defaultBorders.putIfAbsent(c, c.border) }
 
@@ -167,7 +171,7 @@ class EntryDetailDialog(
       override fun removeUpdate(e: javax.swing.event.DocumentEvent) = updateCitationPreview()
       override fun changedUpdate(e: javax.swing.event.DocumentEvent) = updateCitationPreview()
     })
-    (typeField as JComboBox<*>).addActionListener { updateCitationPreview() }
+    (typeField as JComboBox<*>).addActionListener { updateCitationPreview(); updateTypeCoercionHint() }
     corporateCheck.addActionListener { updateCitationPreview() }
     formatCombo.addActionListener { updateCitationPreview() }
     copyCitationBtn.addActionListener { copyCurrentCitation() }
@@ -232,7 +236,11 @@ class EntryDetailDialog(
   }
 
   private fun initFieldsFrom(e: BibLibraryService.BibEntry) {
-    typeField.selectedItem = e.type
+    run {
+      val svc = project.getService(BibLibraryService::class.java)
+      val t = svc.canonicalUiType(e.type)
+      typeField.selectedItem = t
+    }
     titleField.text = e.fields["title"] ?: e.fields["booktitle"] ?: ""
     keyField.text = e.key
     // Populate authors list (unified). Detect corporate vs personal based on comma presence
@@ -285,6 +293,7 @@ class EntryDetailDialog(
     verifiedByField.text = e.fields["verified_by"] ?: ""
     createdField.text = e.fields["created"] ?: ""
     modifiedField.text = e.fields["modified"] ?: ""
+    updateTypeCoercionHint(e)
   }
 
   override fun createCenterPanel(): JComponent {
@@ -314,6 +323,7 @@ class EntryDetailDialog(
       row++
     }
     addRow("Type", typeField, columns = 3)
+    addRow("", typeHintLabel, columns = 3)
     // Date row
     run {
       val lc = GridBagConstraints().apply { gridx = 0; gridy = row; insets = Insets(4,10,4,10); anchor = GridBagConstraints.WEST }
@@ -573,13 +583,33 @@ class EntryDetailDialog(
     // Now that components exist, update visibility/labels and preview
     updateContextLabels()
     updateCitationPreview()
+    updateTypeCoercionHint(entry)
     // Ensure DOI/ISBN field is wide enough for typical ISBN/DOI values
     adjustDoiFieldWidth()
     return container
   }
 
+  private fun updateTypeCoercionHint(e: BibLibraryService.BibEntry? = null) {
+    val current = e ?: entry
+    val svc = project.getService(BibLibraryService::class.java)
+    val selected = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val canonical = svc.canonicalUiType(selected)
+    val sub = current.fields["entrysubtype"]?.trim().orEmpty()
+    val subCanon = if (sub.isNotEmpty()) svc.canonicalUiType(sub) else ""
+    val show = canonical == "misc" && sub.isNotEmpty() && subCanon == "misc"
+    if (show) {
+      typeHintLabel.text = "Saved as @misc (entrysubtype='${sub}') due to legacy type"
+      typeHintLabel.isVisible = true
+    } else {
+      typeHintLabel.text = ""
+      typeHintLabel.isVisible = false
+    }
+  }
+
   override fun doOKAction() {
-    val tSelLower = (typeField.selectedItem as? String)?.toString()?.lowercase()?.trim() ?: entry.type
+    val tSelLower = (typeField.selectedItem as? String)?.toString()?.lowercase()?.trim()
+      ?.let { project.getService(BibLibraryService::class.java).canonicalUiType(it) }
+      ?: project.getService(BibLibraryService::class.java).canonicalUiType(entry.type)
     if (tSelLower == "court case") {
       val errs = mutableListOf<String>()
       val nameOk = titleField.text.trim().isNotEmpty()
@@ -628,7 +658,9 @@ class EntryDetailDialog(
       }
     }
 
-    val t = (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase() ?: entry.type
+    val t = (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase()
+      ?.let { project.getService(BibLibraryService::class.java).canonicalUiType(it) }
+      ?: project.getService(BibLibraryService::class.java).canonicalUiType(entry.type)
     val fields = mutableMapOf<String, String>()
     fields["title"] = titleField.text.trim()
     fields["year"] = yearField.text.trim()
@@ -706,7 +738,8 @@ class EntryDetailDialog(
     }
 
     val candidate = BibLibraryService.BibEntry(t, newKey, fields)
-    val issues = svc.validateEntryDetailed(candidate)
+    // Use full-context validation so crossref/xdata and aliases are honored before saving
+    val issues = svc.validateEntryInContext(candidate)
     val errors = issues.filter { it.severity == BibLibraryService.Severity.ERROR }
     if (errors.isNotEmpty()) {
       val msg = errors.joinToString("\n") { "- ${it.field}: ${it.message}" }
@@ -750,7 +783,9 @@ class EntryDetailDialog(
   }
 
   private fun currentPreviewEntry(): BibLibraryService.BibEntry {
-    val typeSel = (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase() ?: entry.type
+    val typeSel = (typeField.selectedItem as? String)?.toString()?.trim()?.lowercase()
+      ?.let { project.getService(BibLibraryService::class.java).canonicalUiType(it) }
+      ?: project.getService(BibLibraryService::class.java).canonicalUiType(entry.type)
     val fields = mutableMapOf<String, String>()
     fields["title"] = titleField.text.trim()
     val y = yearField.text.trim(); if (y.isNotEmpty()) fields["year"] = y
@@ -848,32 +883,32 @@ class EntryDetailDialog(
       "APA 7" -> when (t) {
         "article" -> setOf("author", "title", "year", "journal")
         "book" -> setOf("author", "title", "year", "publisher")
-        "website" -> setOf("title", "publisher", "url")
-        "inproceedings", "conference paper" -> setOf("author", "title", "year")
+        "online" -> setOf("title", "publisher", "url")
+        "inproceedings" -> setOf("author", "title", "year")
         "patent" -> setOf("author", "title", "date", "year", "publisher", "doi")
         else -> emptySet()
       }
       "MLA" -> when (t) {
         "article" -> setOf("author", "title", "journal")
         "book" -> setOf("author", "title", "publisher")
-        "website" -> setOf("title", "publisher", "url")
-        "inproceedings", "conference paper" -> setOf("author", "title")
+        "online" -> setOf("title", "publisher", "url")
+        "inproceedings" -> setOf("author", "title")
         "patent" -> setOf("author", "title", "publisher", "doi", "year")
         else -> emptySet()
       }
       "Chicago" -> when (t) {
         "article" -> setOf("author", "title", "journal", "year")
         "book" -> setOf("author", "title", "publisher", "year")
-        "website" -> setOf("title", "publisher", "url")
-        "inproceedings", "conference paper" -> setOf("author", "title", "year")
+        "online" -> setOf("title", "publisher", "url")
+        "inproceedings" -> setOf("author", "title", "year")
         "patent" -> setOf("author", "title", "date", "publisher", "doi")
         else -> emptySet()
       }
       "IEEE" -> when (t) {
         "article" -> setOf("author", "title", "journal", "year")
         "book" -> setOf("author", "title", "publisher", "year")
-        "website" -> setOf("title", "publisher", "url")
-        "inproceedings", "conference paper" -> setOf("author", "title", "year")
+        "online" -> setOf("title", "publisher", "url")
+        "inproceedings" -> setOf("author", "title", "year")
         "patent" -> setOf("author", "title", "date", "year", "doi")
         else -> emptySet()
       }
@@ -956,7 +991,8 @@ class EntryDetailDialog(
   private fun updateContextLabels() {
     // Guard for early calls before UI components initialize
     if (!::authorModeCards.isInitialized || !::authorsScrollRef.isInitialized) return
-    val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val t = (typeField.selectedItem as? String)?.lowercase()?.trim()
+      ?.let { project.getService(BibLibraryService::class.java).canonicalUiType(it) } ?: ""
     val (creatorSingular, _) = when (t) {
       "movie/film", "video" -> "Director" to "Directors"
       "tv/radio broadcast" -> "Director" to "Directors"

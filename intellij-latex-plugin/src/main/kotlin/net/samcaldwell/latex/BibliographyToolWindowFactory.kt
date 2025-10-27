@@ -645,10 +645,10 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             when (contextType.lowercase()) {
               "article" -> setOf("title", "author", "year", "journaltitle")
               "book" -> setOf("title", "author", "year", "publisher")
-              "inproceedings", "conference paper" -> setOf("title", "author", "year")
+              "inproceedings" -> setOf("title", "author", "year")
               // Patent minimal: title, author, number, year (or date handled separately)
               "patent" -> setOf("title", "author", "number", "year")
-              "website", "online" -> setOf("title", "publisher", "url")
+              "online" -> setOf("title", "publisher", "url")
               else -> setOf("title")
             }
           }
@@ -671,14 +671,20 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
               if (n != null) f[name] = n
             }
             normTs("created"); normTs("modified"); normTs("timestamp")
-            // Normalize URL per RFC 3986 if possible
-            run {
-              val uv = f["url"]
-              if (uv != null) {
-                val nu = svc.normalizeHttpUrlRfc3986(uv)
-                if (nu != null) f["url"] = nu
+          // Normalize URL-like fields per RFC 3986 if possible
+          run {
+            val keys = f.keys.toList()
+            for (k in keys) {
+              val key = k.lowercase()
+              if (key == "url" || key.endsWith("url")) {
+                val uv = f[k]
+                if (uv != null) {
+                  val nu = svc.normalizeHttpUrlRfc3986(uv)
+                  if (nu != null) f[k] = nu
+                }
               }
             }
+          }
           }
           // Determine context type: prefer field 'type', else entrysubtype for misc, else header type
           val fieldType = f["type"]?.trim()?.lowercase()
@@ -992,6 +998,14 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
   private data class FieldRow(val label: JComponent, val field: JComponent)
   private val fieldRows = mutableMapOf<String, FieldRow>()
   private val typeField = JComboBox(CitationTypes.array())
+  private val typeHintLabel = JLabel("").apply {
+    foreground = Color(0x66, 0x66, 0x66)
+    font = font.deriveFont(java.awt.Font.ITALIC)
+  }
+  private val typeHintLabel = JLabel("").apply {
+    foreground = Color(0x66, 0x66, 0x66)
+    font = font.deriveFont(java.awt.Font.ITALIC)
+  }
   private data class AuthorName(val family: String, val given: String)
   private val authorFamilyField = JTextField()
   private val authorGivenField = JTextField()
@@ -1093,6 +1107,7 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     }
 
     addRow("Type", typeField)
+    addRow("", typeHintLabel)
     // Author composite input: Family + Given + Add button
     val addAuthorBtn = JButton("+")
     authorFamilyField.columns = 12
@@ -1405,6 +1420,7 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     typeField.addActionListener {
       updateVisibleFields()
       markDirtyFromUser()
+      updateTypeCoercionHint()
     }
 
     // Mark dirty on edits
@@ -1511,9 +1527,18 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     if (currentKey != null && prevType != null && prevType != type) {
       svc.deleteEntry(prevType, currentKey!!)
     }
-    val ok = svc.upsertEntry(
-      BibLibraryService.BibEntry(type, generatedKey, fields)
-    )
+    // Pre-save validation with full biblatex semantics in library context
+    run {
+      val candidate = BibLibraryService.BibEntry(type, generatedKey, fields)
+      val issues = svc.validateEntryInContext(candidate)
+      val errors = issues.filter { it.severity == BibLibraryService.Severity.ERROR }
+      if (errors.isNotEmpty()) {
+        val msg = errors.joinToString("\n") { "- ${it.field}: ${it.message}" }
+        Messages.showErrorDialog(project, "Please fix the following before saving:\n\n$msg", "Bibliography")
+        return
+      }
+    }
+    val ok = svc.upsertEntry(BibLibraryService.BibEntry(type, generatedKey, fields))
     if (ok) {
       Messages.showInfoMessage(project, "Saved to library.bib", "Bibliography")
       refreshList(selectKey = generatedKey)
@@ -1542,7 +1567,10 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     abstractArea.text = ""
     keywordsModel.clear()
     keywordField.text = ""
-      // Metadata fields are managed in detail dialog; not shown here
+    // Hide legacy type hint for new entries
+    typeHintLabel.text = ""
+    typeHintLabel.isVisible = false
+    // Metadata fields are managed in detail dialog; not shown here
   }
 
   private fun openSpecificLibrary() {
@@ -1665,7 +1693,10 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     try {
       currentKey = e.key
       currentType = e.type
-      typeField.selectedItem = e.type
+      run {
+        val svc = project.getService(BibLibraryService::class.java)
+        typeField.selectedItem = svc.canonicalUiType(e.type)
+      }
       updateVisibleFields()
       // Populate authors list from BibTeX author string
       authorsModel.clear()
@@ -1706,6 +1737,7 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
       updateStatus()
       // Re-validate after fields are populated to clear stale errors
       validateForm()
+      updateTypeCoercionHint(e)
     }
   }
 
@@ -1811,15 +1843,8 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     val author = crits.firstOrNull { it.kind.equals("Author", true) }?.text
     if (!title.isNullOrBlank()) {
       val q = if (!author.isNullOrBlank()) "$title $author" else title
-      // Try media-targeted lookups based on selected type first
-      val t = typeCrit ?: ((typeField.selectedItem as? String)?.lowercase()?.trim() ?: "")
-      if (t in setOf("movie/film", "video", "tv/radio broadcast")) {
-        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
-      } else if (t in setOf("song")) {
-        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
-      } else {
-        tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
-      }
+      // Use general import for title/author query
+      tryImport { svc.importFromAny(q) }?.let { onImported(it); return }
     }
     // Author only
     if (!author.isNullOrBlank()) {
@@ -1890,19 +1915,19 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
   }
 
   private fun visibleKeysForSelectedType(): Set<String> {
-    val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val tRaw = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val t = project.getService(BibLibraryService::class.java).canonicalUiType(tRaw)
     return when (t) {
       "article" -> setOf("author", "title", "year", "journal", "doi", "url", "abstract", "keywords")
-      "book" -> setOf("author", "title", "year", "publisher", "doi", "url", "abstract", "keywords")
-      "rfc" -> setOf("author", "title", "year", "doi", "url", "abstract", "keywords")
-      "inproceedings", "conference paper" -> setOf("author", "title", "year", "doi", "url", "abstract", "keywords")
-      "misc" -> setOf("author", "title", "year", "url", "abstract", "keywords")
-      "thesis (or dissertation)", "report" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords")
-      // Patent requires inventor(s), year/date, issuing authority, identifier, optional URL
+      "book", "inbook", "bookinbook", "suppbook",
+      "collection", "mvcollection", "incollection", "suppcollection",
+      "proceedings", "mvproceedings", "inproceedings",
+      "reference", "mvreference", "inreference",
+      "manual", "report", "thesis", "periodical", "suppperiodical", "software", "dataset" ->
+        setOf("author", "title", "year", "publisher", "doi", "url", "abstract", "keywords")
+      "online", "misc", "unpublished", "set" -> setOf("author", "title", "year", "url", "abstract", "keywords")
+      // Patent: inventor(s), issuing authority, identifier (uses DOI field UI), optional URL
       "patent" -> setOf("author", "title", "year", "publisher", "doi", "url", "abstract", "keywords")
-      "dictionary entry" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords")
-      "legislation", "regulation" -> setOf("title", "year", "publisher", "url", "abstract", "keywords")
-      "song", "movie/film", "video", "tv/radio broadcast", "speech", "image", "website", "journal", "personal communication" -> setOf("author", "title", "year", "publisher", "url", "abstract", "keywords")
       else -> setOf("author", "title", "year", "url", "abstract", "keywords")
     }
   }
@@ -1937,22 +1962,9 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     if (!isLoading) validateForm()
   }
 
-  private fun roleLabelsForType(t: String): Pair<String, String> = when (t) {
-    "movie/film", "video" -> "Director" to "Directors"
-    "tv/radio broadcast" -> "Director" to "Directors"
-    "song" -> "Artist" to "Artists"
-    "speech" -> "Speaker" to "Speakers"
-    "patent" -> "Inventor" to "Inventors"
-    else -> "Author" to "Authors"
-  }
+  private fun roleLabelsForType(t: String): Pair<String, String> = if (t == "patent") "Inventor" to "Inventors" else "Author" to "Authors"
 
-  private fun publisherLabelForType(t: String): String = when (t) {
-    "movie/film", "video" -> "Studio"
-    "tv/radio broadcast" -> "Network"
-    "song" -> "Label"
-    "patent" -> "Issuing authority"
-    else -> "Publisher"
-  }
+  private fun publisherLabelForType(t: String): String = if (t == "patent") "Issuing authority" else "Publisher"
 
   private fun markDirtyFromUser() {
     if (!isLoading) {
@@ -2094,6 +2106,26 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     // No metadata fields on the main form
 
     return valid
+  }
+
+  private fun updateTypeCoercionHint(e: BibLibraryService.BibEntry? = null) {
+    val svc = project.getService(BibLibraryService::class.java)
+    val selected = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
+    val canonical = svc.canonicalUiType(selected)
+    // Try to use provided entry for subtype; otherwise load current from file
+    val subRaw = try {
+      e?.fields?.get("entrysubtype") ?: (if (currentKey != null && currentType != null) loadEntry(currentType!!, currentKey!!)?.fields?.get("entrysubtype") else null)
+    } catch (_: Throwable) { null }
+    val sub = subRaw?.trim().orEmpty()
+    val subCanon = if (sub.isNotEmpty()) svc.canonicalUiType(sub) else ""
+    val show = canonical == "misc" && sub.isNotEmpty() && subCanon == "misc"
+    if (show) {
+      typeHintLabel.text = "Saved as @misc (entrysubtype='${sub}') due to legacy type"
+      typeHintLabel.isVisible = true
+    } else {
+      typeHintLabel.text = ""
+      typeHintLabel.isVisible = false
+    }
   }
 
   private fun requiredKeysForType(t: String): Set<String> {
@@ -2754,7 +2786,10 @@ private fun currentUserName(): String {
     }
 
     private fun initFieldsFrom(e: BibLibraryService.BibEntry) {
-      typeField.selectedItem = e.type
+      run {
+        val svc = project.getService(BibLibraryService::class.java)
+        typeField.selectedItem = svc.canonicalUiType(e.type)
+      }
       titleField.text = e.fields["title"] ?: e.fields["booktitle"] ?: ""
       keyField.text = e.key
       // Populate authors or corporate names
@@ -3259,32 +3294,32 @@ private fun currentUserName(): String {
         "APA 7" -> when (t) {
           "article" -> setOf("author", "title", "year", "journal")
           "book" -> setOf("author", "title", "year", "publisher")
-          "website" -> setOf("title", "publisher", "url")
-          "inproceedings", "conference paper" -> setOf("author", "title", "year")
+          "online" -> setOf("title", "publisher", "url")
+          "inproceedings" -> setOf("author", "title", "year")
           "patent" -> setOf("author", "title", "date", "year", "publisher", "doi")
           else -> emptySet()
         }
         "MLA" -> when (t) {
           "article" -> setOf("author", "title", "journal")
           "book" -> setOf("author", "title", "publisher")
-          "website" -> setOf("title", "publisher", "url")
-          "inproceedings", "conference paper" -> setOf("author", "title")
+          "online" -> setOf("title", "publisher", "url")
+          "inproceedings" -> setOf("author", "title")
           "patent" -> setOf("author", "title", "publisher", "doi", "year")
           else -> emptySet()
         }
         "Chicago" -> when (t) {
           "article" -> setOf("author", "title", "journal", "year")
           "book" -> setOf("author", "title", "publisher", "year")
-          "website" -> setOf("title", "publisher", "url")
-          "inproceedings", "conference paper" -> setOf("author", "title", "year")
+          "online" -> setOf("title", "publisher", "url")
+          "inproceedings" -> setOf("author", "title", "year")
           "patent" -> setOf("author", "title", "date", "publisher", "doi")
           else -> emptySet()
         }
         "IEEE" -> when (t) {
           "article" -> setOf("author", "title", "journal", "year")
           "book" -> setOf("author", "title", "publisher", "year")
-          "website" -> setOf("title", "publisher", "url")
-          "inproceedings", "conference paper" -> setOf("author", "title", "year")
+          "online" -> setOf("title", "publisher", "url")
+          "inproceedings" -> setOf("author", "title", "year")
           "patent" -> setOf("author", "title", "date", "year", "doi")
           else -> emptySet()
         }
@@ -3330,41 +3365,21 @@ private fun currentUserName(): String {
 
     private fun updateContextLabels() {
       val t = (typeField.selectedItem as? String)?.lowercase()?.trim() ?: ""
-      val (creatorSingular, _) = when (t) {
-        "movie/film", "video" -> "Director" to "Directors"
-        "tv/radio broadcast" -> "Director" to "Directors"
-        "song" -> "Artist" to "Artists"
-        "speech" -> "Speaker" to "Speakers"
-        "patent" -> "Inventor" to "Inventors"
-        else -> "Author" to "Authors"
-      }
+      val (creatorSingular, _) = if (t == "patent") "Inventor" to "Inventors" else "Author" to "Authors"
       authorLabel.text = creatorSingular
-      authorsListLabel.text = when (t) {
-        "movie/film", "video", "tv/radio broadcast" -> "Directors"
-        "song" -> "Artists"
-        "speech" -> "Speakers"
-        "patent" -> "Inventors"
-        else -> "Authors"
-      }
-      publisherLabel.text = when (t) {
-        "movie/film", "video" -> "Studio"
-        "tv/radio broadcast" -> "Network"
-        "song" -> "Label"
-        "patent" -> "Issuing authority"
-        "court case" -> "Court"
-        else -> "Publisher"
-      }
+      authorsListLabel.text = if (t == "patent") "Inventors" else "Authors"
+      publisherLabel.text = if (t == "patent") "Issuing authority" else if (t == "court case") "Court" else "Publisher"
       idLabel.text = when (t) {
         "book" -> "ISBN"
         "article" -> "DOI"
         "patent" -> "Patent Identifier"
         else -> "DOI/ISBN"
       }
-      // Toggle visibility for website/court case: hide Journal and DOI/ISBN
-      val showId = t != "website" && t != "court case"
+      // Toggle visibility for online/court case: hide Journal and DOI/ISBN
+      val showId = t != "online" && t != "court case"
       idLabel.isVisible = showId
       doiField.isVisible = showId
-      val showJournal = t != "website" && t != "court case"
+      val showJournal = t != "online" && t != "court case"
       journalLabel.isVisible = showJournal
       journalField.isVisible = showJournal
       // Show Date for patent and court case (decision date)
@@ -3494,11 +3509,11 @@ private fun currentUserName(): String {
       setOrRemove("year", yearField.text.trim())
       setOrRemove("date", dateField.text.trim())
       val tSel = (typeField.selectedItem as? String)?.toString()?.lowercase()?.trim() ?: origType
-      if (tSel != "website") setOrRemove("journaltitle", journalField.text.trim()) else { baseFields.remove("journaltitle"); baseFields.remove("journal") }
+      if (tSel != "online") setOrRemove("journaltitle", journalField.text.trim()) else { baseFields.remove("journaltitle"); baseFields.remove("journal") }
       setOrRemove("publisher", publisherField.text.trim())
       // Save combined DOI/ISBN to the appropriate field
       val idVal = doiField.text.trim()
-      if (tSel == "website") {
+      if (tSel == "online") {
         baseFields.remove("doi"); baseFields.remove("isbn")
       } else {
         if (idVal.isEmpty()) {
