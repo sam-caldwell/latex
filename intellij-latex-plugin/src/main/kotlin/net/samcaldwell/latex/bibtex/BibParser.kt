@@ -88,35 +88,24 @@ class BibParser(private val source: String) {
   }
 
   private fun parsePreambleDirective(startOffset: Int, delim: Delim): BibNode {
-    // Record opening offset then consume opener token
-    val openOff = lookahead.offset
-    when (delim) {
-      Delim.BRACES -> consume(TokType.LBRACE)
-      Delim.PARENS -> consume(TokType.LPAREN)
+    val chunks: List<BlobChunk> = when (delim) {
+      Delim.BRACES -> {
+        val (ch, _) = lx.readBracedBlobAfterOpen()
+        lookahead = lx.nextToken(); ch
+      }
+      Delim.PARENS -> {
+        val (ch, _) = lx.readParenBlobAfterOpen()
+        lookahead = lx.nextToken(); ch
+      }
     }
-    // Extract body directly from source for lossless text
-    val body = extractBodyFromSource(openOff, delim)
-    // Advance token stream to closing delimiter and consume it
-    when (delim) {
-      Delim.BRACES -> { while (!match(TokType.RBRACE) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RBRACE)) consume(TokType.RBRACE) }
-      Delim.PARENS -> { while (!match(TokType.RPAREN) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RPAREN)) consume(TokType.RPAREN) }
-    }
-    val chunks = listOf(BlobChunk.BlobText(body))
     return BibNode.PreambleDirective(Blob(delim, chunks), startOffset, delim)
   }
 
   private fun parseCommentDirective(startOffset: Int, delim: Delim): BibNode {
-    val openOff = lookahead.offset
-    when (delim) {
-      Delim.BRACES -> consume(TokType.LBRACE)
-      Delim.PARENS -> consume(TokType.LPAREN)
+    val chunks: List<BlobChunk> = when (delim) {
+      Delim.BRACES -> { val (ch, _) = lx.readBracedBlobAfterOpen(); lookahead = lx.nextToken(); ch }
+      Delim.PARENS -> { val (ch, _) = lx.readParenBlobAfterOpen(); lookahead = lx.nextToken(); ch }
     }
-    val body = extractBodyFromSource(openOff, delim)
-    when (delim) {
-      Delim.BRACES -> { while (!match(TokType.RBRACE) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RBRACE)) consume(TokType.RBRACE) }
-      Delim.PARENS -> { while (!match(TokType.RPAREN) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RPAREN)) consume(TokType.RPAREN) }
-    }
-    val chunks = listOf(BlobChunk.BlobText(body))
     return BibNode.CommentDirective(Blob(delim, chunks), startOffset, delim)
   }
 
@@ -205,13 +194,9 @@ class BibParser(private val source: String) {
           addPart(Part.Str(StrKind.QUOTED, chunks), t.offset)
         }
         match(TokType.LBRACE) -> {
-          val openOff = lookahead.offset
-          // Consume '{' token to align token stream, then read chunked braces directly from the lexer stream
-          consume(TokType.LBRACE)
-          val (chunks, _) = lx.readBracedStrChunksAfterOpen()
-          // Synchronize token stream to first token after the closing '}'
+          val (chunks, off) = lx.readBracedStrChunksAfterOpen()
           lookahead = lx.nextToken()
-          addPart(Part.Str(StrKind.BRACED, chunks), openOff)
+          addPart(Part.Str(StrKind.BRACED, chunks), off)
         }
         match(TokType.IDENT) -> {
           val t = consume(TokType.IDENT)
@@ -263,7 +248,7 @@ class BibParser(private val source: String) {
     private fun appendChunks(sb: StringBuilder, chunks: List<StrChunk>) {
       for (c in chunks) when (c) {
         is StrChunk.Text -> sb.append(c.raw)
-        is StrChunk.Group -> appendChunks(sb, c.chunks)
+        is StrChunk.Group -> { sb.append('{'); appendChunks(sb, c.chunks); sb.append('}') }
       }
     }
 
@@ -307,5 +292,36 @@ class BibParser(private val source: String) {
       i++
     }
     return if (i <= start) "" else source.substring(start, i)
+  }
+  private fun parseChunksFromBraceText(s: String): List<StrChunk> {
+    val root = mutableListOf<StrChunk>()
+    val stack = java.util.ArrayDeque<MutableList<StrChunk>>()
+    stack.addLast(root)
+    val sb = StringBuilder()
+    fun flushText() { if (sb.isNotEmpty()) { stack.peekLast().add(StrChunk.Text(sb.toString())); sb.setLength(0) } }
+    for (ch in s) {
+      when (ch) {
+        '{' -> { flushText(); stack.addLast(mutableListOf()) }
+        '}' -> {
+          flushText()
+          if (stack.size > 1) {
+            val inner = stack.removeLast()
+            stack.peekLast().add(StrChunk.Group(inner))
+          } else {
+            // unmatched close; literal
+            stack.peekLast().add(StrChunk.Text("}"))
+          }
+        }
+        else -> sb.append(ch)
+      }
+    }
+    flushText()
+    while (stack.size > 1) {
+      val inner = stack.removeLast()
+      val text = StringBuilder("{")
+      appendChunks(text, inner)
+      stack.peekLast().add(StrChunk.Text(text.toString()))
+    }
+    return root
   }
 }

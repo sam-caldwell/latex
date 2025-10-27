@@ -16,7 +16,7 @@ repositories {
 group = "net.samcaldwell.latex"
 // Default version for local builds; Makefile bump/tag expects this literal pattern.
 // CI (tagged builds) will override below when GITHUB_REF_NAME like 'vX.Y.Z' is present.
-version = "0.0.7"
+version = "0.0.8"
 run {
   val refName = System.getenv("GITHUB_REF_NAME") ?: System.getenv("GITHUB_REF")?.substringAfterLast('/')
   if (refName != null && refName.startsWith("v")) {

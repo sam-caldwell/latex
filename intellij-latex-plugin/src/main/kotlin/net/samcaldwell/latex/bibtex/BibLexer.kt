@@ -398,12 +398,11 @@ internal class BibLexer(private val input: String) {
     val chunks = mutableListOf<StrChunk>()
     val sb = StringBuilder()
     fun flushText() { if (sb.isNotEmpty()) { chunks += StrChunk.Text(sb.toString()); sb.setLength(0) } }
-    var depth = 0
     while (true) {
       val c = peek() ?: break
       when (c) {
-        '{' -> { advance(); depth++; val (inner, _) = readStrChunksInsideBraces(); flushText(); chunks += StrChunk.Group(inner) }
-        '}' -> { advance(); if (depth == 0) break else { depth--; } }
+        '{' -> { advance(); val (inner, _) = readStrChunksInsideBraces(); flushText(); chunks += StrChunk.Group(inner) }
+        '}' -> { advance(); break }
         else -> { sb.append(c); advance() }
       }
     }
@@ -416,12 +415,12 @@ internal class BibLexer(private val input: String) {
     val chunks = mutableListOf<BlobChunk>()
     val sb = StringBuilder()
     fun flushText() { if (sb.isNotEmpty()) { chunks += BlobChunk.BlobText(sb.toString()); sb.setLength(0) } }
-    var depth = 0
     while (true) {
       val c = peek() ?: break
       when (c) {
-        '{' -> { advance(); depth++; val (inner, _) = readBracedBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.BRACES, inner) }
-        '}' -> { advance(); if (depth == 0) break else depth-- }
+        '{' -> { advance(); val (inner, _) = readBracedBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.BRACES, inner) }
+        '(' -> { advance(); val (inner, _) = readParenBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.PARENS, inner) }
+        '}' -> { advance(); break }
         else -> { sb.append(c); advance() }
       }
     }
@@ -434,12 +433,12 @@ internal class BibLexer(private val input: String) {
     val chunks = mutableListOf<BlobChunk>()
     val sb = StringBuilder()
     fun flushText() { if (sb.isNotEmpty()) { chunks += BlobChunk.BlobText(sb.toString()); sb.setLength(0) } }
-    var depth = 0
     while (true) {
       val c = peek() ?: break
       when (c) {
-        '(' -> { advance(); depth++; val (inner, _) = readParenBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.PARENS, inner) }
-        ')' -> { advance(); if (depth == 0) break else depth-- }
+        '(' -> { advance(); val (inner, _) = readParenBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.PARENS, inner) }
+        '{' -> { advance(); val (inner, _) = readBracedBlobInner(); flushText(); chunks += BlobChunk.BlobGroup(Delim.BRACES, inner) }
+        ')' -> { advance(); break }
         else -> { sb.append(c); advance() }
       }
     }

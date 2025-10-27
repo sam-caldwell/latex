@@ -131,17 +131,6 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       }
     })
     val validationSummary = JLabel("")
-    val statsArea = JTextArea().apply {
-      isEditable = false
-      lineWrap = true
-      wrapStyleWord = true
-      font = javax.swing.UIManager.getFont("Label.font")
-      border = BorderFactory.createEmptyBorder(4, 0, 0, 0)
-    }
-    val statsPanel = JPanel(BorderLayout()).apply {
-      add(JLabel("Statistics"), BorderLayout.NORTH)
-      add(statsArea, BorderLayout.CENTER)
-    }
     val validationContainer = JPanel(BorderLayout()).apply {
       border = BorderFactory.createCompoundBorder(
         BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color(0xE0, 0xE0, 0xE0)),
@@ -149,37 +138,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       )
       add(validationSummary, BorderLayout.NORTH)
       add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 120) }, BorderLayout.CENTER)
-      add(statsPanel, BorderLayout.SOUTH)
       isVisible = false
-    }
-
-    fun updateStatsForPath(path: java.nio.file.Path, errors: Int, warnings: Int) {
-      val raw = try { java.nio.file.Files.readString(path) } catch (_: Throwable) { null }
-      if (raw == null) { statsArea.text = ""; return }
-      val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
-      val parsed = parser.parse()
-      // Build string macro map for 'type' field expansion
-      val strings = mutableMapOf<String, String>()
-      for (n in parsed.file.nodes) if (n is net.samcaldwell.latex.bibtex.BibNode.StringDirective) strings[n.name] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(n.value, strings)
-      val entries = parsed.file.nodes.filterIsInstance<net.samcaldwell.latex.bibtex.BibNode.Entry>()
-      val total = entries.size
-      val byHeaderType = entries.groupingBy { it.type.lowercase() }.eachCount().toSortedMap()
-      val byFieldType = entries.mapNotNull { node ->
-        val ft = node.fields.firstOrNull { it.name.equals("type", true) }?.value
-        ft?.let { net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(it, strings).lowercase() }?.takeIf { it.isNotBlank() }
-      }.groupingBy { it }.eachCount().toSortedMap()
-
-      val sb = StringBuilder()
-      sb.append("Records: ").append(total)
-        .append("    Errors: ").append(errors)
-        .append("    Warnings: ").append(warnings)
-        .append('\n')
-      sb.append("By @type:")
-      if (byHeaderType.isEmpty()) sb.append(" none") else for ((t, n) in byHeaderType) sb.append('\n').append("- ").append(t).append(": ").append(n)
-      sb.append('\n')
-      sb.append("By field 'type':")
-      if (byFieldType.isEmpty()) sb.append(" none") else for ((t, n) in byFieldType) sb.append('\n').append("- ").append(t).append(": ").append(n)
-      statsArea.text = sb.toString()
     }
 
     fun runVerifyAndPopulate() {
@@ -307,12 +266,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       validationModel.clear()
       for (gi in globalIssues) validationModel.addElement(gi)
       for (ei in perEntryIssues) validationModel.addElement(ei)
-      // Update statistics panel using the parsed file
-      runCatching {
-        val errCount = globalIssues.size + perEntryIssues.count { it.display.contains(" ERROR:") }
-        val warnCount = perEntryIssues.count { it.display.contains(" WARNING:") }
-        updateStatsForPath(path, errors = errCount, warnings = warnCount)
-      }
+      // Stats panel removed
       validationContainer.isVisible = true
       validationContainer.revalidate(); validationContainer.repaint()
     }
@@ -468,7 +422,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           fun rec(list: List<net.samcaldwell.latex.bibtex.BlobChunk>) {
             for (c in list) when (c) {
               is net.samcaldwell.latex.bibtex.BlobChunk.BlobText -> sb.append(c.raw)
-              is net.samcaldwell.latex.bibtex.BlobChunk.BlobGroup -> rec(c.chunks)
+              is net.samcaldwell.latex.bibtex.BlobChunk.BlobGroup -> {
+                when (c.kind) {
+                  net.samcaldwell.latex.bibtex.Delim.BRACES -> sb.append('{')
+                  net.samcaldwell.latex.bibtex.Delim.PARENS -> sb.append('(')
+                }
+                rec(c.chunks)
+                when (c.kind) {
+                  net.samcaldwell.latex.bibtex.Delim.BRACES -> sb.append('}')
+                  net.samcaldwell.latex.bibtex.Delim.PARENS -> sb.append(')')
+                }
+              }
             }
           }
           rec(chunks)
@@ -525,8 +489,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         } catch (_: Throwable) { }
 
         result.set("Reformatted ${sorted.size} entr" + if (sorted.size == 1) "y" else "ies")
-        // Update statistics panel after successful reformat
-        updateStatsForPath(path, errors = 0, warnings = 0)
+        // Stats panel removed
       }, "Reformatting", false, project)
 
       val msg = result.get()
