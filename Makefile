@@ -1,4 +1,4 @@
-.PHONY: help version lint test test-all cover cover-check build run verify clean wrapper dist tag/patch tag/minor tag/major tag/pre
+.PHONY: help version lint test test-all cover cover-check coverage build run verify clean wrapper dist tag/patch tag/minor tag/major tag/pre
 
 PLUGIN_DIR := intellij-latex-plugin
 GRADLEW := $(PLUGIN_DIR)/gradlew
@@ -18,6 +18,7 @@ help:()
 	@echo "  test-all - Run all tests, including LightPlatform"
 	@echo "  cover    - Generate JaCoCo coverage report"
 	@echo "  cover-check - Verify coverage >= 80%"
+	@echo "  coverage - Run tests, report coverage %, and gate >=80%"
 	@echo "  build    - Build plugin distribution ZIP"
 	@echo "  run      - Launch sandbox IDE with the plugin"
 	@echo "  verify   - Verify plugin against IDE versions"
@@ -30,7 +31,7 @@ help:()
 	@echo "  tag/pre  - Create pre-release tag vX.Y.Z-<short>, push"
 
 lint:
-	$(GRADLE) -p $(PLUGIN_DIR) check
+	$(GRADLE) -p $(PLUGIN_DIR) -DenableLightTests=true check
 
 test:
 	# Run all tests (unit + LightPlatform) with coverage gating
@@ -45,6 +46,16 @@ cover:
 
 cover-check:
 	$(GRADLE) -p $(PLUGIN_DIR) -DenableLightTests=true jacocoTestCoverageVerification
+
+# Convenience: run tests, generate coverage, print %, and gate >=80%
+coverage:
+	@set -e; \
+	$(GRADLE) -p $(PLUGIN_DIR) -DenableLightTests=true test jacocoTestReport jacocoTestCoverageVerification >/dev/null; \
+	XML="$(PLUGIN_DIR)/build/reports/jacoco/test/jacocoTestReport.xml"; \
+	if [ ! -f "$$XML" ]; then echo "Coverage XML not found: $$XML"; exit 1; fi; \
+	PCT=$$(awk -F '"' '/counter type="INSTRUCTION"/{missed+=$$6;covered+=$$8} END{ if (missed+covered>0) printf "%.2f", (100*covered/(missed+covered)); else print "0.00" }' "$$XML"); \
+	echo "Coverage: $$PCT%"; \
+	awk -v p="$$PCT" 'BEGIN { if (p+0.0 >= 80.0) { exit 0 } else { exit 1 } }' >/dev/null || { echo "Coverage gate failed (< 80%)"; exit 1; }
 
 build:
 	@# Ensure Gradle wrapper is executable if present

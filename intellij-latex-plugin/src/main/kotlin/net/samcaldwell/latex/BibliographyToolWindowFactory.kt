@@ -1002,10 +1002,6 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     foreground = Color(0x66, 0x66, 0x66)
     font = font.deriveFont(java.awt.Font.ITALIC)
   }
-  private val typeHintLabel = JLabel("").apply {
-    foreground = Color(0x66, 0x66, 0x66)
-    font = font.deriveFont(java.awt.Font.ITALIC)
-  }
   private data class AuthorName(val family: String, val given: String)
   private val authorFamilyField = JTextField()
   private val authorGivenField = JTextField()
@@ -2114,7 +2110,8 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     val canonical = svc.canonicalUiType(selected)
     // Try to use provided entry for subtype; otherwise load current from file
     val subRaw = try {
-      e?.fields?.get("entrysubtype") ?: (if (currentKey != null && currentType != null) loadEntry(currentType!!, currentKey!!)?.fields?.get("entrysubtype") else null)
+      e?.fields?.get("entrysubtype")
+        ?: (if (currentKey != null && currentType != null) loadEntryForPanel(currentType!!, currentKey!!)?.fields?.get("entrysubtype") else null)
     } catch (_: Throwable) { null }
     val sub = subRaw?.trim().orEmpty()
     val subCanon = if (sub.isNotEmpty()) svc.canonicalUiType(sub) else ""
@@ -2125,6 +2122,16 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     } else {
       typeHintLabel.text = ""
       typeHintLabel.isVisible = false
+    }
+  }
+
+  // Local helper for this panel to fetch an entry by type+key from the current library
+  private fun loadEntryForPanel(type: String, key: String): BibLibraryService.BibEntry? {
+    val svc = project.getService(BibLibraryService::class.java)
+    return try {
+      svc.readEntries().firstOrNull { it.type == type && it.key == key }
+    } catch (_: Throwable) {
+      null
     }
   }
 
