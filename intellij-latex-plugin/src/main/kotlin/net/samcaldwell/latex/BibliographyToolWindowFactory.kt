@@ -501,7 +501,8 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
               "article" -> setOf("title", "author", "year", "journaltitle")
               "book" -> setOf("title", "author", "year", "publisher")
               "inproceedings", "conference paper" -> setOf("title", "author", "year")
-              "patent" -> setOf("title", "author", "year", "publisher", "doi")
+              // Patent minimal: title, author, number, year (or date handled separately)
+              "patent" -> setOf("title", "author", "number", "year")
               "website", "online" -> setOf("title", "publisher", "url")
               else -> setOf("title")
             }
@@ -1950,32 +1951,25 @@ private class BibliographyPanel(private val project: Project) : JPanel(BorderLay
     return valid
   }
 
-  private fun requiredKeysForType(t: String): Set<String> = when (t) {
-    // Scholarly article requires journal and year
-    "article" -> setOf("title", "author", "year", "journal")
-    // Book requires publisher and year
-    "book" -> setOf("title", "author", "year", "publisher")
-    // RFC requires author, title, year (identifier handled via DOI/URL)
-    "rfc" -> setOf("title", "author", "year")
-    // Proceedings: require author, title, year
-    "inproceedings", "conference paper" -> setOf("title", "author", "year")
-    // Media types
-    "movie/film", "video" -> setOf("title", "author", "year", "publisher")
-    "song" -> setOf("title", "author", "year", "publisher")
-    "tv/radio broadcast" -> setOf("title", "author", "year", "publisher")
-    "speech" -> setOf("title", "author", "year")
-    // Thesis/report/dictionary entry: require author, title, year, publisher
-    "thesis (or dissertation)", "report", "dictionary entry" -> setOf("title", "author", "year", "publisher")
-    // Patent: inventor(s), year/date, issuing authority, identifier
-    "patent" -> setOf("title", "author", "year", "publisher", "doi")
-    // Journal document type (non-article) require author, title, year
-    "journal" -> setOf("title", "author", "year")
-    // Legislation/regulation: title, year, publisher (issuing body)
-    "legislation", "regulation" -> setOf("title", "year", "publisher")
-    // NIST standards: title, year, publisher
-    "nist" -> setOf("title", "year", "publisher")
-    // Media and misc: title required, author often desirable but optional; year optional
-    else -> setOf("title")
+  private fun requiredKeysForType(t: String): Set<String> {
+    // Delegate to service model if available to avoid divergence
+    return try {
+      val svc = project.getService(BibLibraryService::class.java)
+      val m = svc.javaClass.getDeclaredMethod("requiredKeysForType", String::class.java)
+      m.isAccessible = true
+      @Suppress("UNCHECKED_CAST")
+      m.invoke(svc, t) as Set<String>
+    } catch (_: Throwable) {
+      // Fallback minimal set
+      when (t.lowercase()) {
+        "article" -> setOf("title", "author", "year", "journaltitle")
+        "book" -> setOf("title", "author", "year", "publisher")
+        "inproceedings", "conference paper" -> setOf("title", "author", "year")
+        "online", "electronic" -> setOf("title", "url")
+        "patent" -> setOf("title", "author", "number", "year")
+        else -> setOf("title")
+      }
+    }
   }
 
   // Duplicate functionality removed per data model: duplicates not allowed

@@ -27,9 +27,19 @@ import java.io.ByteArrayInputStream
 
   companion object {
     val ALLOWED_BIBLATEX_TYPES: Set<String> = setOf(
-      "article", "book", "booklet", "inbook", "incollection", "inproceedings",
-      "manual", "mastersthesis", "misc", "phdthesis", "proceedings",
-      "techreport", "unpublished", "online"
+      // Core + extended
+      "article", "book", "mvbook", "inbook", "bookinbook", "suppbook",
+      "booklet", "collection", "mvcollection", "incollection", "suppcollection",
+      "dataset", "manual", "misc", "online", "patent", "periodical", "suppperiodical",
+      "proceedings", "mvproceedings", "inproceedings", "reference", "mvreference", "inreference",
+      "report", "set", "software", "thesis", "unpublished", "xdata",
+      // Aliases/synonyms commonly encountered (normalized via normalizeType)
+      "conference", "electronic", "mastersthesis", "phdthesis", "techreport",
+      // Custom types
+      "customa", "customb", "customc", "customd", "custome", "customf",
+      // Additional domain-specific types accepted
+      "artwork", "audio", "bibnote", "commentary", "image", "jurisdiction", "legislation", "legal",
+      "letter", "movie", "music", "performance", "review", "standard", "video"
     )
     val NONENTRY_DIRECTIVES: Set<String> = setOf("string", "preamble", "comment")
   }
@@ -139,20 +149,24 @@ import java.io.ByteArrayInputStream
     fun has(k: String) = f[canonicalFieldName(k)]?.trim().orEmpty().isNotEmpty()
     fun valOf(k: String) = f[canonicalFieldName(k)]?.trim().orEmpty()
 
-    val required: Set<String> = when (t) {
-      // Switch to canonical journaltitle for articles
-      "article" -> setOf("author", "title", "journaltitle", "year")
-      "book" -> setOf("author", "title", "publisher", "year")
-      "inproceedings", "conference paper" -> setOf("author", "title", "year")
-      "thesis", "thesis (or dissertation)" -> setOf("author", "title", "year", "publisher")
-      "report" -> setOf("author", "title", "year", "publisher")
-      "website" -> setOf("title", "publisher", "url")
-      "patent" -> setOf("author", "title", "year", "publisher")
-      "court case" -> setOf("title", "year")
+    val required: Set<String> = TYPE_REQUIRED[t] ?: when (t) {
+      // Deprecated/legacy aliases
+      "website" -> setOf("title", "url")
+      // Fallback minimal set
       else -> setOf("title")
     }
 
     for (k in required) if (!has(k)) err(k, "Missing required field: $k")
+
+    // Patent-specific required fields: number and one of year/date
+    if (t == "patent") {
+      val number = valOf("number")
+      val doi = valOf("doi")
+      if (number.isEmpty() && doi.isEmpty()) err("number", "Missing required field: number (patent identifier)")
+      val hasYear = has("year")
+      val hasDate = has("date")
+      if (!hasYear && !hasDate) err("year", "Missing required field: year or date")
+    }
 
     val y = valOf("year")
     if (y.isNotEmpty() && !y.matches(Regex("(\\d{4}|(?i)n\\.d\\.)"))) err("year", "Year must be 4 digits or n.d.")
@@ -1618,12 +1632,59 @@ import java.io.ByteArrayInputStream
     "music" -> "song"
     // Common BibLaTeX synonyms
     "conference" -> "inproceedings"
+    "electronic" -> "online"
     "phd thesis", "phd-thesis" -> "phdthesis"
     "masters thesis", "master's thesis", "masters-thesis" -> "mastersthesis"
     "tech report", "technical report" -> "techreport"
     "website", "web" -> "online"
+    "movie/film" -> "movie"
+    "tv/radio broadcast" -> "video"
     else -> t.lowercase().trim()
   }
+
+  // Required fields per biblatex-ish schema (approximate; extend as needed)
+  private val TYPE_REQUIRED: Map<String, Set<String>> = mapOf(
+    "article" to setOf("author", "title", "journaltitle", "year"),
+    "book" to setOf("author", "title", "publisher", "year"),
+    "mvbook" to setOf("title", "year"),
+    "inbook" to setOf("author", "title", "booktitle", "year"),
+    "bookinbook" to setOf("author", "title", "booktitle", "year"),
+    "suppbook" to setOf("title", "year"),
+    "booklet" to setOf("title"),
+    "collection" to setOf("title", "year"),
+    "mvcollection" to setOf("title", "year"),
+    "incollection" to setOf("author", "title", "booktitle", "year"),
+    "suppcollection" to setOf("title", "year"),
+    "dataset" to setOf("title", "year"),
+    "manual" to setOf("title"),
+    "misc" to emptySet(),
+    "online" to setOf("title", "url"),
+    "patent" to setOf("author", "title"), // plus number and year/date enforced below
+    "periodical" to setOf("title", "year"),
+    "suppperiodical" to setOf("title", "year"),
+    "proceedings" to setOf("title", "year"),
+    "mvproceedings" to setOf("title", "year"),
+    "inproceedings" to setOf("author", "title", "booktitle", "year"),
+    "reference" to setOf("title", "year"),
+    "mvreference" to setOf("title", "year"),
+    "inreference" to setOf("author", "title", "booktitle", "year"),
+    "report" to setOf("title", "author", "year", "institution"),
+    "set" to setOf("title"),
+    "software" to setOf("title"),
+    "thesis" to setOf("author", "title", "year", "institution"),
+    "mastersthesis" to setOf("author", "title", "year", "institution"),
+    "phdthesis" to setOf("author", "title", "year", "institution"),
+    "unpublished" to setOf("author", "title", "note", "year"),
+    "xdata" to emptySet(),
+    // Accept custom and domain-specific types with minimal constraints
+    "customa" to setOf("title"), "customb" to setOf("title"), "customc" to setOf("title"),
+    "customd" to setOf("title"), "custome" to setOf("title"), "customf" to setOf("title"),
+    "artwork" to setOf("title"), "audio" to setOf("title"), "bibnote" to setOf("title"),
+    "commentary" to setOf("title"), "image" to setOf("title"), "jurisdiction" to setOf("title", "year"),
+    "legislation" to setOf("title", "year"), "legal" to setOf("title", "year"), "letter" to setOf("title", "year"),
+    "movie" to setOf("title", "year"), "music" to setOf("title", "year"), "performance" to setOf("title", "year"),
+    "review" to setOf("title", "year"), "standard" to setOf("title", "year"), "video" to setOf("title", "year")
+  )
 
   // Returns a pair of (fileType, entrySubType?) mapped to the strict BibLaTeX set.
   // If the given type is not one of the allowed types, we serialize as @misc and
