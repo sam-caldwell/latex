@@ -130,7 +130,7 @@ ident           = ident_start , { ident_cont } ;
 ident_start     = letter | "_" ;
 ident_cont      = letter | digit | "_" | "-" | ":" | "." ;
 key             = key_char , { key_char } ;
-entrytype       = ident ;                                      (* e.g., article, book, xdata, set, … *)
+entrytype       = ident ;                                      (* e.g., article, book, inproceedings, proceedings, xdata, set, … *)
 
 (* ---------- Lexical trivia ---------- *)
 line_comment    = "%" , { not_newline } , newline ;
