@@ -69,8 +69,8 @@ java {
 
 configurations.all {
   resolutionStrategy {
-    force("org.apache.pdfbox:pdfbox:2.0.30")
-    force("org.apache.pdfbox:fontbox:2.0.30")
+    force("org.apache.pdfbox:pdfbox:3.0.6")
+    force("org.apache.pdfbox:fontbox:3.0.6")
   }
 }
 
