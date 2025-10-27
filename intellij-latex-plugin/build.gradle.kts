@@ -3,7 +3,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 plugins {
   id("org.jetbrains.intellij.platform") version "2.10.2"
   // Align Kotlin with the 2024.2 platform to avoid runtime conflicts
-  kotlin("jvm") version "2.0.21"
+  kotlin("jvm") version "2.2.21"
   jacoco
   `maven-publish`
 }
