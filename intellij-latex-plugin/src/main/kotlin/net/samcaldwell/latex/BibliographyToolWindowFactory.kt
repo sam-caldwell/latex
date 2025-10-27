@@ -192,16 +192,32 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       val path = svc.ensureLibraryExists() ?: run {
         validationSummary.text = "No library.bib configured"
         validationModel.clear()
+        // Clear details panel as well
+        try { issueDetails.text = "" } catch (_: Throwable) {}
         validationContainer.isVisible = true
         return
       }
+      // Ensure on-disk content and VFS are up to date before reading
+      runCatching { com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().saveAllDocuments() }
+      val vFile = try { com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile()) } catch (_: Throwable) { null }
+      runCatching { vFile?.refresh(true, false) }
+      // Reset UI state for a fresh run
+      validationSummary.text = "Verifying…"
+      validationModel.clear()
+      runCatching { issueDetails.text = "" }
+      validationContainer.isVisible = true
+      validationContainer.revalidate(); validationContainer.repaint()
       val result = java.util.concurrent.atomic.AtomicReference<String>()
       val globalIssues = java.util.Collections.synchronizedList(mutableListOf<VerifyIssue>())
       val perEntryIssues = java.util.Collections.synchronizedList(mutableListOf<VerifyIssue>())
       com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously({
         val indicator = com.intellij.openapi.progress.ProgressManager.getInstance().progressIndicator
         if (indicator != null) { indicator.isIndeterminate = true; indicator.text = "Verifying" }
-        val raw = java.nio.file.Files.readString(path)
+        val raw = try {
+          if (vFile != null) com.intellij.openapi.vfs.VfsUtilCore.loadText(vFile) else java.nio.file.Files.readString(path)
+        } catch (t: Throwable) {
+          java.nio.file.Files.readString(path)
+        }
         val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
         val parsed = parser.parse()
         var errs = 0; var warns = 0
@@ -385,6 +401,12 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       validationModel.clear()
       for (gi in globalIssues) validationModel.addElement(gi)
       for (ei in perEntryIssues) validationModel.addElement(ei)
+      // Select first issue to show details by default
+      if (validationModel.size() > 0) {
+        validationList.selectedIndex = 0
+      } else {
+        issueDetails.text = "No issues found."
+      }
       // Stats panel removed
       validationContainer.isVisible = true
       validationContainer.revalidate(); validationContainer.repaint()
