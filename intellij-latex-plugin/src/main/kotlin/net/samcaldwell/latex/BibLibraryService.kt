@@ -298,13 +298,17 @@ import java.io.ByteArrayInputStream
       out += ValidationIssue("author", "Empty author segment", Severity.ERROR)
       return out
     }
+    // Accept special placeholders for unknown authors
+    if (part.equals("unknown", ignoreCase = true) || part.equals("anonymous", ignoreCase = true)) {
+      return out
+    }
     // Organization if properly wrapped in a single outer pair of braces
     if (hasSingleOuterBraces(part)) {
       // check braces are balanced
       if (!bracesBalanced(part)) out += ValidationIssue("author", "Unbalanced braces in organization author: $part", Severity.ERROR)
       return out
     }
-    // Personal name; count commas outside inner braces (accents)
+    // Count commas outside inner braces (accents)
     var depth = 0
     var commas = 0
     for (c in part) {
@@ -316,9 +320,8 @@ import java.io.ByteArrayInputStream
     }
     when (commas) {
       0 -> {
-        // Given Family form: require at least two tokens
-        val tokens = part.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (tokens.size < 2) out += ValidationIssue("author", "Personal name '$part' should include family and given name(s) or use 'Family, Given' format", Severity.ERROR)
+        // Treat arbitrary single-segment names as valid organization/pseudonym names; do not error.
+        // If desired, users can specify personal names as 'Family, Given'.
       }
       1 -> {
         val segs = part.split(',')
@@ -335,11 +338,7 @@ import java.io.ByteArrayInputStream
       }
       else -> out += ValidationIssue("author", "Personal name '$part' has too many commas; use 'Family, Given' or 'Family, Jr, Given'", Severity.ERROR)
     }
-    // Heuristic: warn if likely organization without braces
-    val orgHints = listOf("inc", "ltd", "llc", "university", "institute", "association", "committee")
-    if (!part.contains(',') && orgHints.any { part.contains(it, ignoreCase = true) }) {
-      out += ValidationIssue("author", "Organization author '$part' should be wrapped in braces: {$part}", Severity.WARNING)
-    }
+    // No warning for unbraced organization names; allow arbitrary strings.
     return out
   }
 

@@ -40,7 +40,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       override fun dispose() {}
     }
     // Validation panel shown directly below main toolbar after Verify runs
-    data class VerifyIssue(val display: String, val offset: Int)
+    data class VerifyIssue(
+      val display: String,
+      val offset: Int,
+      val severity: String? = null,
+      val field: String? = null,
+      val entryKey: String? = null,
+      val entryType: String? = null,
+      val line: Int = 0,
+      val col: Int = 0,
+      val suggestion: String? = null
+    )
     val validationModel = DefaultListModel<VerifyIssue>()
     val validationList = JList(validationModel).apply {
       selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
@@ -131,14 +141,50 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       }
     })
     val validationSummary = JLabel("")
+    val issueDetails = JTextArea().apply {
+      isEditable = false
+      lineWrap = true
+      wrapStyleWord = true
+      font = javax.swing.UIManager.getFont("Label.font")
+      border = BorderFactory.createCompoundBorder(
+        BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color(0xE0, 0xE0, 0xE0)),
+        BorderFactory.createEmptyBorder(6, 6, 0, 0)
+      )
+    }
+    val centerPanel = JPanel(BorderLayout()).apply {
+      add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 140) }, BorderLayout.CENTER)
+      add(JScrollPane(issueDetails).apply { preferredSize = java.awt.Dimension(100, 110) }, BorderLayout.SOUTH)
+    }
     val validationContainer = JPanel(BorderLayout()).apply {
       border = BorderFactory.createCompoundBorder(
         BorderFactory.createMatteBorder(1, 0, 0, 0, java.awt.Color(0xE0, 0xE0, 0xE0)),
         BorderFactory.createEmptyBorder(6, 6, 6, 6)
       )
       add(validationSummary, BorderLayout.NORTH)
-      add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 120) }, BorderLayout.CENTER)
+      add(centerPanel, BorderLayout.CENTER)
       isVisible = false
+    }
+
+    fun renderDetails(issue: VerifyIssue?): String {
+      if (issue == null) return "Select an error to see details."
+      val b = StringBuilder()
+      if (!issue.severity.isNullOrBlank()) b.append("Severity: ").append(issue.severity).append('\n')
+      if (issue.line > 0 || issue.col > 0) b.append("Location: ").append(issue.line).append(':').append(issue.col).append('\n')
+      if (!issue.entryKey.isNullOrBlank()) b.append("Entry: ").append(issue.entryKey)
+      if (!issue.entryType.isNullOrBlank()) b.append(" (type: ").append(issue.entryType).append(')')
+      if (!issue.entryKey.isNullOrBlank() || !issue.entryType.isNullOrBlank()) b.append('\n')
+      if (!issue.field.isNullOrBlank()) b.append("Field: ").append(issue.field).append('\n')
+      b.append("Message: ").append(issue.display.substringAfter(' ')).append('\n')
+      if (!issue.suggestion.isNullOrBlank()) b.append("Recommended fix: ").append(issue.suggestion).append('\n')
+      return b.toString().trimEnd()
+    }
+
+    validationList.addListSelectionListener {
+      if (!it.valueIsAdjusting) {
+        val idx = validationList.selectedIndex
+        val issue = if (idx >= 0 && idx < validationModel.size()) validationModel.get(idx) else null
+        issueDetails.text = renderDetails(issue)
+      }
     }
 
     fun runVerifyAndPopulate() {
@@ -159,10 +205,43 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
         val parsed = parser.parse()
         var errs = 0; var warns = 0
+        fun suggestFix(field: String?, msg: String): String {
+          val m = msg.lowercase()
+          if (m.contains("expected brace-wrapped")) return "Wrap the value in braces: { … }"
+          if (m.contains("missing required field")) return "Add the missing field with a valid value."
+          if (m.contains("invalid url")) return "Provide an absolute http/https/ftp URL with correct percent-encoding."
+          if (m.contains("date must be")) return "Use YYYY, YYYY-MM, YYYY-MM-DD, a range (start/end), or 'n.d.'."
+          if (m.contains("timestamp must be")) return "Use ISO 8601: YYYY-MM-DDThh:mm[:ss][Z|±hh:mm]."
+          if (m.contains("year must be")) return "Use a 4-digit year or 'n.d.'."
+          if (m.contains("does not match date")) return "Align 'year' with the first year in 'date' or remove 'year'."
+          if ((field == "howpublished") || m.contains("howpublished") || m.contains("use the url field for urls")) return "Move URLs to the 'url' field; keep 'howpublished' as a literal description."
+          // Accept arbitrary organization names and placeholders for authors; no brace suggestion
+          if (m.contains("personal name")) return "Use 'Family, Given' or 'Family, Jr, Given' or brace organizations."
+          if (m.contains("invalid doi")) return "Provide a valid DOI starting with '10.' and a suffix."
+          if (m.contains("invalid isbn")) return "Provide a valid ISBN-10 or ISBN-13 with correct checksum."
+          if (m.contains("missing '='")) return "Insert '=' between field name and value."
+          if (m.contains("missing comma after entry key")) return "Insert a comma after the entry key."
+          if (m.contains("disallowed or unknown record type")) return "Use a supported BibLaTeX type or '@misc' with 'entrysubtype'."
+          if (m.contains("duplicate key")) return "Rename the entry key to be unique or remove the duplicate."
+          if (m.contains("missing closing")) return "Balance braces/parentheses and ensure the entry closes properly."
+          return "Review this value to comply with BibLaTeX rules."
+        }
+
         // Parser syntax errors
         for (pe in parsed.errors) {
           val lc = parser.toLineCol(pe.offset)
-          globalIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${pe.message}", pe.offset))
+          val msg = pe.message
+          globalIssues.add(VerifyIssue(
+            display = "${lc.first}:${lc.second} ERROR: ${msg}",
+            offset = pe.offset,
+            severity = "ERROR",
+            field = null,
+            entryKey = null,
+            entryType = null,
+            line = lc.first,
+            col = lc.second,
+            suggestion = suggestFix(null, msg)
+          ))
           errs++
         }
         // Collect @string macros for BibLaTeX semantics
@@ -211,7 +290,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
           for (i in 1 until offsets.size) {
             val off = offsets[i]
             val lc = parser.toLineCol(off)
-            perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: duplicate key across types: ${list.joinToString(", ") { it.type }} [${key}]", off))
+            perEntryIssues.add(VerifyIssue(
+              display = "${lc.first}:${lc.second} ERROR: duplicate key across types: ${list.joinToString(", ") { it.type }} [${key}]",
+              offset = off,
+              severity = "ERROR",
+              field = "key",
+              entryKey = key,
+              entryType = list.firstOrNull()?.type,
+              line = lc.first,
+              col = lc.second,
+              suggestion = suggestFix("key", "duplicate key")
+            ))
             errs++
           }
         }
@@ -223,7 +312,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             val nonEntries = BibLibraryService.NONENTRY_DIRECTIVES
             if (!allowed.contains(tNorm) && tNorm != "misc" && tNorm != "inproceedings" && !nonEntries.contains(tNorm)) {
               val lc = parser.toLineCol(node.headerOffset)
-              globalIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: disallowed or unknown record type '@${node.type}'", node.headerOffset))
+              globalIssues.add(VerifyIssue(
+                display = "${lc.first}:${lc.second} ERROR: disallowed or unknown record type '@${node.type}'",
+                offset = node.headerOffset,
+                severity = "ERROR",
+                field = "type",
+                entryKey = node.key,
+                entryType = node.type,
+                line = lc.first,
+                col = lc.second,
+                suggestion = suggestFix("type", "disallowed or unknown record type")
+              ))
               errs++
             }
           }
@@ -237,7 +336,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
               val bracedTop = parts.size == 1 && (parts[0] as? net.samcaldwell.latex.bibtex.Part.Str)?.kind == net.samcaldwell.latex.bibtex.StrKind.BRACED
               if (!bracedTop) {
                 val lc = parser.toLineCol(f.valueOffset)
-                perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${f.name} – expected brace-wrapped value: {…} [${node.key}]", f.valueOffset))
+                perEntryIssues.add(VerifyIssue(
+                  display = "${lc.first}:${lc.second} ERROR: ${f.name} – expected brace-wrapped value: {…} [${node.key}]",
+                  offset = f.valueOffset,
+                  severity = "ERROR",
+                  field = f.name,
+                  entryKey = node.key,
+                  entryType = node.type,
+                  line = lc.first,
+                  col = lc.second,
+                  suggestion = suggestFix(f.name, "expected brace-wrapped value")
+                ))
                 errs++
               }
             }
@@ -251,7 +360,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             val off = fieldOffsets[e.key to name] ?: entryOffsets[e.key]?.firstOrNull() ?: 0
             val lc = parser.toLineCol(off)
             val lvl = if (p.severity == BibLibraryService.Severity.ERROR) { errs++; "ERROR" } else { warns++; "WARNING" }
-            perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ${lvl}: ${p.field} – ${p.message} [${e.key}]", off))
+            perEntryIssues.add(VerifyIssue(
+              display = "${lc.first}:${lc.second} ${lvl}: ${p.field} – ${p.message} [${e.key}]",
+              offset = off,
+              severity = lvl,
+              field = p.field,
+              entryKey = e.key,
+              entryType = e.type,
+              line = lc.first,
+              col = lc.second,
+              suggestion = suggestFix(p.field, p.message)
+            ))
           }
         }
         val sb = StringBuilder()
