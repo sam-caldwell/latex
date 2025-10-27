@@ -34,7 +34,7 @@ dependencies {
   implementation("com.google.code.gson:gson:2.13.2")
 
   testImplementation(kotlin("test"))
-  testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+  testImplementation("org.junit.jupiter:junit-jupiter:6.0.0")
   testImplementation("io.mockk:mockk:1.13.12")
   testImplementation("junit:junit:4.13.2")
   testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.2")
