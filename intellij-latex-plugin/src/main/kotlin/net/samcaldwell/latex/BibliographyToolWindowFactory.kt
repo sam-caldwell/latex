@@ -275,7 +275,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
             for (f in node.fields) {
               val v = f.value
               val parts = v.parts
-              val bracedTop = parts.size == 1 && parts[0] is net.samcaldwell.latex.bibtex.ValuePart.BracedText
+              val bracedTop = parts.size == 1 && (parts[0] as? net.samcaldwell.latex.bibtex.Part.Str)?.kind == net.samcaldwell.latex.bibtex.StrKind.BRACED
               if (!bracedTop) {
                 val lc = parser.toLineCol(f.valueOffset)
                 perEntryIssues.add(VerifyIssue("${lc.first}:${lc.second} ERROR: ${f.name} – expected brace-wrapped value: {…} [${node.key}]", f.valueOffset))
@@ -463,17 +463,34 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         ))
 
         // 5) Serialize directives and entries with context-aware formatting
+        fun flattenBlob(chunks: List<net.samcaldwell.latex.bibtex.BlobChunk>): String {
+          val sb = StringBuilder()
+          fun rec(list: List<net.samcaldwell.latex.bibtex.BlobChunk>) {
+            for (c in list) when (c) {
+              is net.samcaldwell.latex.bibtex.BlobChunk.BlobText -> sb.append(c.raw)
+              is net.samcaldwell.latex.bibtex.BlobChunk.BlobGroup -> rec(c.chunks)
+            }
+          }
+          rec(chunks)
+          return sb.toString()
+        }
+        fun wrapByDelim(tag: String, body: String, delim: net.samcaldwell.latex.bibtex.Delim): String =
+          when (delim) {
+            net.samcaldwell.latex.bibtex.Delim.BRACES -> "@" + tag + "{" + body + "}\n\n"
+            net.samcaldwell.latex.bibtex.Delim.PARENS -> "@" + tag + "(" + body + ")\n\n"
+          }
         fun serializeStringDirective(d: net.samcaldwell.latex.bibtex.BibNode.StringDirective): String {
           val v = net.samcaldwell.latex.bibtex.BibParser.flattenValue(d.value)
-          return "@string{" + d.name + " = {" + v.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") + "}}\n\n"
+          val inner = d.name + " = {" + v.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") + "}"
+          return wrapByDelim("string", inner, d.delim)
         }
         fun serializePreamble(d: net.samcaldwell.latex.bibtex.BibNode.PreambleDirective): String {
-          val v = net.samcaldwell.latex.bibtex.BibParser.flattenValue(d.value)
-          return "@preamble{" + v.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}") + "}\n\n"
+          val inner = flattenBlob(d.payload.chunks)
+          return wrapByDelim("preamble", inner, d.delim)
         }
         fun serializeComment(d: net.samcaldwell.latex.bibtex.BibNode.CommentDirective): String {
-          val v = d.text
-          return "@comment{" + v + "}\n\n"
+          val inner = flattenBlob(d.payload.chunks)
+          return wrapByDelim("comment", inner, d.delim)
         }
         val sb = StringBuilder()
         // Emit non-entry directives in original order

@@ -50,72 +50,91 @@ class BibParser(private val source: String) {
     val typeTok = if (match(TokType.IDENT)) consume(TokType.IDENT) else run {
       errors += ParserError("Missing type after @", lookahead.offset); lookahead
     }
-    // Accept either { or (
-    val ldelim = lookahead
-    if (match(TokType.LBRACE)) consume(TokType.LBRACE) else if (match(TokType.LPAREN)) consume(TokType.LPAREN) else {
-      errors += ParserError("Missing '{' or '(' after @${typeTok.text}", lookahead.offset)
+    // Determine delimiter without consuming
+    val delim: Delim = when {
+      match(TokType.LBRACE) -> Delim.BRACES
+      match(TokType.LPAREN) -> Delim.PARENS
+      else -> { errors += ParserError("Missing '{' or '(' after @${typeTok.text}", lookahead.offset); Delim.BRACES }
     }
 
     val type = typeTok.text.lowercase()
-    val node: BibNode = when (type) {
-      "string" -> parseStringDirective(atTok.offset)
-      "preamble" -> parsePreambleDirective(atTok.offset)
-      "comment" -> parseCommentDirective(atTok.offset)
-      else -> parseEntry(typeTok.text, atTok.offset)
+    return when (type) {
+      "string" -> parseStringDirective(atTok.offset, delim)
+      "preamble" -> parsePreambleDirective(atTok.offset, delim)
+      "comment" -> parseCommentDirective(atTok.offset, delim)
+      else -> parseEntry(typeTok.text, atTok.offset, delim)
     }
-
-    // Closing delimiter: } or )
-    if (match(TokType.RBRACE)) consume(TokType.RBRACE) else if (match(TokType.RPAREN)) consume(TokType.RPAREN) else {
-      errors += ParserError("Missing closing brace/paren for @${typeTok.text}", lookahead.offset)
-    }
-    return node
   }
 
-  private fun parseStringDirective(startOffset: Int): BibNode {
-    // @string{ name = value }
+  private fun parseStringDirective(startOffset: Int, delim: Delim): BibNode {
+    // Expect opener
+    when (delim) {
+      Delim.BRACES -> if (match(TokType.LBRACE)) consume(TokType.LBRACE) else errors += ParserError("Missing '{' after @string", lookahead.offset)
+      Delim.PARENS -> if (match(TokType.LPAREN)) consume(TokType.LPAREN) else errors += ParserError("Missing '(' after @string", lookahead.offset)
+    }
     val nameTok = if (match(TokType.IDENT)) consume(TokType.IDENT) else run {
       errors += ParserError("@string requires identifier name", lookahead.offset); lookahead
     }
     if (match(TokType.EQUALS)) consume(TokType.EQUALS) else errors += ParserError("Missing '=' in @string", lookahead.offset)
-    val (value, _) = parseValueExpr()
+    val (value, _) = parseValue()
     // Optional trailing comma(s)
     while (match(TokType.COMMA)) consume(TokType.COMMA)
-    return BibNode.StringDirective(nameTok.text, value, startOffset)
-  }
-
-  private fun parsePreambleDirective(startOffset: Int): BibNode {
-    val (value, _) = parseValueExpr()
-    while (match(TokType.COMMA)) consume(TokType.COMMA)
-    return BibNode.PreambleDirective(value, startOffset)
-  }
-
-  private fun parseCommentDirective(startOffset: Int): BibNode {
-    // Read until closing delimiter as raw text if present
-    val text = StringBuilder()
-    // Attempt to read braced content as one block if available
-    if (lookahead.type == TokType.LBRACE) {
-      val pair = lx.readBracedString()
-      if (pair != null) {
-        lookahead = lx.nextToken() // move after closing brace
-        return BibNode.CommentDirective(pair.first, startOffset)
-      }
+    // Expect closer
+    when (delim) {
+      Delim.BRACES -> if (match(TokType.RBRACE)) consume(TokType.RBRACE) else errors += ParserError("Missing '}' for @string", lookahead.offset)
+      Delim.PARENS -> if (match(TokType.RPAREN)) consume(TokType.RPAREN) else errors += ParserError("Missing ')' for @string", lookahead.offset)
     }
-    return BibNode.CommentDirective("", startOffset)
+    return BibNode.StringDirective(nameTok.text, value, startOffset, delim)
   }
 
-  private fun parseEntry(typeText: String, headerOffset: Int): BibNode {
-    // key
-    val key = when {
-      match(TokType.IDENT) -> consume(TokType.IDENT).text
-      match(TokType.NUMBER) -> consume(TokType.NUMBER).text
-      match(TokType.QUOTED_STRING) -> consume(TokType.QUOTED_STRING).text
-      match(TokType.LBRACE) -> {
-        val pair = lx.readBracedString(); lookahead = lx.nextToken(); (pair?.first ?: "").trim()
-      }
-      else -> {
-        errors += ParserError("Missing entry key", lookahead.offset)
-        ""
-      }
+  private fun parsePreambleDirective(startOffset: Int, delim: Delim): BibNode {
+    // Record opening offset then consume opener token
+    val openOff = lookahead.offset
+    when (delim) {
+      Delim.BRACES -> consume(TokType.LBRACE)
+      Delim.PARENS -> consume(TokType.LPAREN)
+    }
+    // Extract body directly from source for lossless text
+    val body = extractBodyFromSource(openOff, delim)
+    // Advance token stream to closing delimiter and consume it
+    when (delim) {
+      Delim.BRACES -> { while (!match(TokType.RBRACE) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RBRACE)) consume(TokType.RBRACE) }
+      Delim.PARENS -> { while (!match(TokType.RPAREN) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RPAREN)) consume(TokType.RPAREN) }
+    }
+    val chunks = listOf(BlobChunk.BlobText(body))
+    return BibNode.PreambleDirective(Blob(delim, chunks), startOffset, delim)
+  }
+
+  private fun parseCommentDirective(startOffset: Int, delim: Delim): BibNode {
+    val openOff = lookahead.offset
+    when (delim) {
+      Delim.BRACES -> consume(TokType.LBRACE)
+      Delim.PARENS -> consume(TokType.LPAREN)
+    }
+    val body = extractBodyFromSource(openOff, delim)
+    when (delim) {
+      Delim.BRACES -> { while (!match(TokType.RBRACE) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RBRACE)) consume(TokType.RBRACE) }
+      Delim.PARENS -> { while (!match(TokType.RPAREN) && lookahead.type != TokType.EOF) lookahead = lx.nextToken(); if (match(TokType.RPAREN)) consume(TokType.RPAREN) }
+    }
+    val chunks = listOf(BlobChunk.BlobText(body))
+    return BibNode.CommentDirective(Blob(delim, chunks), startOffset, delim)
+  }
+
+  private fun parseEntry(typeText: String, headerOffset: Int, delim: Delim): BibNode {
+    // Opening delimiter offset then consume opener token
+    val openOff = lookahead.offset
+    when (delim) {
+      Delim.BRACES -> if (match(TokType.LBRACE)) consume(TokType.LBRACE) else errors += ParserError("Missing '{' after @${typeText}", lookahead.offset)
+      Delim.PARENS -> if (match(TokType.LPAREN)) consume(TokType.LPAREN) else errors += ParserError("Missing '(' after @${typeText}", lookahead.offset)
+    }
+    // key from source between opener and first comma/closer
+    val key = extractKeyFromSource(openOff, delim) ?: run {
+      errors += ParserError("Missing entry key", lookahead.offset)
+      ""
+    }
+    // Fast forward tokens to comma after key, then consume
+    while (!(match(TokType.COMMA) || match(TokType.RBRACE) || match(TokType.RPAREN) || lookahead.type == TokType.EOF)) {
+      lookahead = lx.nextToken()
     }
     if (match(TokType.COMMA)) consume(TokType.COMMA) else errors += ParserError("Missing comma after entry key", lookahead.offset)
 
@@ -154,18 +173,23 @@ class BibParser(private val source: String) {
         }
         // If valueLikely, proceed without consuming '='; parseValueExpr will read starting at current lookahead.
       }
-      val (value, valueOffset) = parseValueExpr()
+      val (value, valueOffset) = parseValue()
       fields += Field(nameTok.text, value, nameTok.offset, valueOffset)
       // Optional comma after each field
       if (match(TokType.COMMA)) consume(TokType.COMMA)
     }
-    return BibNode.Entry(typeText, key, fields, headerOffset)
+    // consume closer
+    when (delim) {
+      Delim.BRACES -> if (match(TokType.RBRACE)) consume(TokType.RBRACE) else errors += ParserError("Missing '}' to close @${typeText}", lookahead.offset)
+      Delim.PARENS -> if (match(TokType.RPAREN)) consume(TokType.RPAREN) else errors += ParserError("Missing ')' to close @${typeText}", lookahead.offset)
+    }
+    return BibNode.Entry(typeText, key, fields, headerOffset, delim)
   }
 
-  private fun parseValueExpr(): Pair<ValueExpr, Int> {
-    val parts = mutableListOf<ValuePart>()
+  private fun parseValue(): Pair<Value, Int> {
+    val parts = mutableListOf<Part>()
     var valueOffset = lookahead.offset
-    fun addPart(p: ValuePart, off: Int) {
+    fun addPart(p: Part, off: Int) {
       if (parts.isEmpty()) valueOffset = off
       parts += p
     }
@@ -177,21 +201,25 @@ class BibParser(private val source: String) {
       when {
         match(TokType.QUOTED_STRING) -> {
           val t = consume(TokType.QUOTED_STRING)
-          addPart(ValuePart.QuotedText(t.text), t.offset)
+          val chunks = parseChunksFromBraceText(t.text)
+          addPart(Part.Str(StrKind.QUOTED, chunks), t.offset)
         }
         match(TokType.LBRACE) -> {
-          val pair = lx.readBracedString()
-          val (text, off) = if (pair != null) pair else Pair("", lookahead.offset)
+          val openOff = lookahead.offset
+          // Consume '{' token to align token stream, then read chunked braces directly from the lexer stream
+          consume(TokType.LBRACE)
+          val (chunks, _) = lx.readBracedStrChunksAfterOpen()
+          // Synchronize token stream to first token after the closing '}'
           lookahead = lx.nextToken()
-          addPart(ValuePart.BracedText(text), off)
+          addPart(Part.Str(StrKind.BRACED, chunks), openOff)
         }
         match(TokType.IDENT) -> {
           val t = consume(TokType.IDENT)
-          addPart(ValuePart.Identifier(t.text), t.offset)
+          addPart(Part.IdentRef(t.text), t.offset)
         }
         match(TokType.NUMBER) -> {
           val t = consume(TokType.NUMBER)
-          addPart(ValuePart.NumberLiteral(t.text), t.offset)
+          addPart(Part.Number(t.text), t.offset)
         }
         else -> {
           errors += ParserError("Invalid value expression", lookahead.offset)
@@ -201,37 +229,83 @@ class BibParser(private val source: String) {
       // Allow subsequent concatenations like "a" # b # {c}
       if (!match(TokType.HASH)) break
     }
-    return Pair(ValueExpr(parts), valueOffset)
+    return Pair(Value(parts), valueOffset)
   }
 
   companion object {
-    fun flattenValue(v: ValueExpr): String {
+    fun flattenValue(v: Value): String {
       val sb = StringBuilder()
-      for (p in v.parts) {
-        when (p) {
-          is ValuePart.BracedText -> sb.append(p.text)
-          is ValuePart.QuotedText -> sb.append(p.text)
-          is ValuePart.Identifier -> sb.append(p.name) // leave macro names as-is
-          is ValuePart.NumberLiteral -> sb.append(p.text)
-        }
-      }
+      appendFlattened(sb, v, emptyMap())
       // Normalize newlines/indentation to single spaces
       val unified = sb.toString().replace("\r\n", "\n").replace('\r', '\n')
       return unified.replace(Regex("[ \t]*\n+[ \t]*"), " ").trim()
     }
 
-    fun flattenValueWith(v: ValueExpr, strings: Map<String, String>): String {
+    fun flattenValueWith(v: Value, strings: Map<String, String>): String {
       val sb = StringBuilder()
-      for (p in v.parts) {
-        when (p) {
-          is ValuePart.BracedText -> sb.append(p.text)
-          is ValuePart.QuotedText -> sb.append(p.text)
-          is ValuePart.Identifier -> sb.append(strings[p.name] ?: p.name)
-          is ValuePart.NumberLiteral -> sb.append(p.text)
-        }
-      }
+      appendFlattened(sb, v, strings)
       val unified = sb.toString().replace("\r\n", "\n").replace('\r', '\n')
       return unified.replace(Regex("[ \t]*\n+[ \t]*"), " ").trim()
     }
+
+    private fun appendFlattened(sb: StringBuilder, v: Value, strings: Map<String, String>) {
+      for (p in v.parts) {
+        when (p) {
+          is Part.Number -> sb.append(p.lexeme)
+          is Part.IdentRef -> sb.append(strings[p.name] ?: p.name)
+          is Part.Str -> when (p.kind) {
+            StrKind.BRACED, StrKind.QUOTED -> appendChunks(sb, p.chunks)
+          }
+        }
+      }
+    }
+
+    private fun appendChunks(sb: StringBuilder, chunks: List<StrChunk>) {
+      for (c in chunks) when (c) {
+        is StrChunk.Text -> sb.append(c.raw)
+        is StrChunk.Group -> appendChunks(sb, c.chunks)
+      }
+    }
+
+  }
+
+  private fun extractKeyFromSource(openOffset: Int, delim: Delim): String? {
+    val start = openOffset + 1
+    var i = start
+    val closeChar = if (delim == Delim.BRACES) '}' else ')'
+    while (i < source.length) {
+      val ch = source[i]
+      if (ch == ',' || ch == closeChar) break
+      i++
+    }
+    if (i <= start) return null
+    return source.substring(start, i).trim()
+  }
+
+  private fun extractBodyFromSource(openOffset: Int, delim: Delim): String {
+    val start = openOffset + 1
+    var i = start
+    var depth = 0
+    val openChar = if (delim == Delim.BRACES) '{' else '('
+    val closeChar = if (delim == Delim.BRACES) '}' else ')'
+    while (i < source.length) {
+      val ch = source[i]
+      if (ch == openChar) depth++
+      else if (ch == closeChar) { if (depth == 0) break else depth-- }
+      i++
+    }
+    return if (i <= start) "" else source.substring(start, i)
+  }
+
+  private fun extractBracedInnerFromSource(openOffset: Int): String {
+    val start = openOffset + 1
+    var i = start
+    var depth = 0
+    while (i < source.length) {
+      val ch = source[i]
+      if (ch == '{') depth++ else if (ch == '}') { if (depth == 0) break else depth-- }
+      i++
+    }
+    return if (i <= start) "" else source.substring(start, i)
   }
 }
