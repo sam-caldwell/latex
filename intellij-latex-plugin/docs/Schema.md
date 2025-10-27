@@ -1,0 +1,110 @@
+# BibLaTeX Validation Schema (Generated)
+
+Source of truth: `BiblatexModel.kt`.
+
+This file is generated during the build. Do not edit by hand.
+
+## Types, Required and Recommended Fields
+
+- article
+  - Required: AllOf(author, title, journaltitle); AnyOf(year, date)
+  - Recommended: doi, number, pages, url, urldate, volume
+- book
+  - Required: AnyOf(author, editor); AllOf(title); AnyOf(year, date)
+  - Recommended: doi, edition, isbn, location, url
+- bookinbook
+  - Required: AnyOf(author, editor); AllOf(title, booktitle); AnyOf(year, date)
+  - Recommended: doi, pages, publisher, url
+- booklet
+  - Required: AllOf(title)
+  - Recommended: author, date, url
+- collection
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, url
+- dataset
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, url, urldate, version
+- inbook
+  - Required: AnyOf(author, editor); AllOf(title, booktitle); AnyOf(year, date)
+  - Recommended: doi, pages, publisher, url
+- incollection
+  - Required: AnyOf(author, editor); AllOf(title, booktitle); AnyOf(year, date)
+  - Recommended: doi, pages, publisher, url
+- inproceedings
+  - Required: AllOf(author, title, booktitle); AnyOf(year, date)
+  - Recommended: doi, number, pages, publisher, series, url, volume
+- inreference
+  - Required: AllOf(author, title, booktitle); AnyOf(year, date)
+  - Recommended: doi, pages, publisher, url
+- manual
+  - Required: AllOf(title)
+  - Recommended: author, url, version
+- misc
+  - Required: (none)
+  - Recommended: author, date, url
+- mvbook
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, edition, isbn, location, url
+- mvcollection
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, url
+- mvproceedings
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, series, url
+- mvreference
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, url
+- online
+  - Required: AllOf(title, url)
+  - Recommended: author, date, urldate
+- patent
+  - Required: AllOf(author, title, number); AnyOf(year, date)
+  - Recommended: holder, location, type, url, urldate, version
+- periodical
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, number, url, volume
+- proceedings
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, number, publisher, series, url, volume
+- reference
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, url
+- report
+  - Required: AllOf(author, title, institution); AnyOf(year, date)
+  - Recommended: doi, number, type, url
+- set
+  - Required: AllOf(title)
+  - Recommended: date
+- software
+  - Required: AllOf(title)
+  - Recommended: doi, publisher, url, urldate, version
+- suppbook
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, publisher, url
+- suppcollection
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, editor, publisher, url
+- suppperiodical
+  - Required: AllOf(title); AnyOf(year, date)
+  - Recommended: doi, number, url, volume
+- thesis
+  - Required: AllOf(author, title, institution); AnyOf(year, date)
+  - Recommended: doi, type, url
+- unpublished
+  - Required: AllOf(author, title, note); AnyOf(year, date)
+  - Recommended: url, urldate
+- xdata
+  - Required: (none)
+  - Recommended: (none)
+
+## Field Kinds
+- name_list: author, editor, holder, translator
+- literal: booktitle, institution, journaltitle, note, number, publisher, subtitle, title, titleaddon, type, version
+- integer: volume, year
+- range: pages
+- date: date, urldate
+- url: url
+- doi: doi
+- eprint: eprint
+- key_list: location
+- xsv: keywords

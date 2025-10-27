@@ -237,3 +237,17 @@ publishing {
     }
   }
 }
+
+// Generate docs/Schema.md from code model
+val generateSchemaMd = tasks.register<JavaExec>("generateSchemaMd") {
+  group = "documentation"
+  description = "Generates docs/Schema.md from BiblatexModel"
+  dependsOn(tasks.named("compileKotlin"))
+  classpath = sourceSets["main"].runtimeClasspath
+  mainClass.set("net.samcaldwell.latex.bibtex.SchemaGeneratorKt")
+  args = listOf(layout.projectDirectory.file("docs/Schema.md").asFile.absolutePath)
+}
+
+// Ensure schema is generated before building the plugin artifact
+tasks.named("build") { dependsOn(generateSchemaMd) }
+  // (moved schema task to top-level after tasks block)
