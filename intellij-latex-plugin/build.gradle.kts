@@ -35,7 +35,7 @@ dependencies {
 
   testImplementation(kotlin("test"))
   testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
-  testImplementation("io.mockk:mockk:1.13.12")
+  testImplementation("io.mockk:mockk:1.14.6")
   testImplementation("junit:junit:4.13.2")
   testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.2")
   testRuntimeOnly("org.jetbrains.kotlinx:kotlinx-coroutines-debug:1.7.3")
