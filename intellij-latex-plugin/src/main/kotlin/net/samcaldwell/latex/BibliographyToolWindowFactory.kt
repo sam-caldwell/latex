@@ -151,6 +151,17 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
         BorderFactory.createEmptyBorder(6, 6, 0, 0)
       )
     }
+    // Quick Fix buttons
+    val quickFixPanel = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT)).apply {
+      border = BorderFactory.createEmptyBorder(6, 0, 0, 0)
+    }
+    val btnWrapBraces = JButton("Wrap in {…}")
+    val btnCopyDoiToNumber = JButton("Copy DOI → number")
+    val btnAddMissingFields = JButton("Add missing fields")
+    quickFixPanel.add(btnWrapBraces)
+    quickFixPanel.add(btnCopyDoiToNumber)
+    quickFixPanel.add(btnAddMissingFields)
+
     val centerPanel = JPanel(BorderLayout()).apply {
       add(JScrollPane(validationList).apply { preferredSize = java.awt.Dimension(100, 140) }, BorderLayout.CENTER)
       add(JScrollPane(issueDetails).apply { preferredSize = java.awt.Dimension(100, 110) }, BorderLayout.SOUTH)
@@ -162,6 +173,7 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       )
       add(validationSummary, BorderLayout.NORTH)
       add(centerPanel, BorderLayout.CENTER)
+      add(quickFixPanel, BorderLayout.SOUTH)
       isVisible = false
     }
 
@@ -179,13 +191,29 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       return b.toString().trimEnd()
     }
 
+    fun enableQuickFixes(issue: VerifyIssue?) {
+      val msg = issue?.display?.lowercase().orEmpty()
+      val isBrace = msg.contains("expected brace-wrapped")
+      val isPatent = issue?.entryType?.lowercase() == "patent"
+      val missingNumber = msg.contains("missing required field: number")
+      val missingField = msg.contains("missing required field")
+      btnWrapBraces.isEnabled = isBrace && (issue?.field != null)
+      btnCopyDoiToNumber.isEnabled = isPatent && (missingNumber || (issue?.field == "number"))
+      btnAddMissingFields.isEnabled = missingField || (issue?.severity == "ERROR")
+    }
+
     validationList.addListSelectionListener {
       if (!it.valueIsAdjusting) {
         val idx = validationList.selectedIndex
         val issue = if (idx >= 0 && idx < validationModel.size()) validationModel.get(idx) else null
         issueDetails.text = renderDetails(issue)
+        enableQuickFixes(issue)
       }
     }
+
+    // --- Quick Fix helpers -------------------------------------------------
+    // Quick fix handlers wired after define runVerifyAndPopulate
+
 
     fun runVerifyAndPopulate() {
       val svc = project.getService(BibLibraryService::class.java)
@@ -410,6 +438,123 @@ class BibliographyToolWindowFactory : ToolWindowFactory, DumbAware {
       // Stats panel removed
       validationContainer.isVisible = true
       validationContainer.revalidate(); validationContainer.repaint()
+    }
+
+    // --- Quick Fix engine (defined after runVerifyAndPopulate) ------------
+    fun loadRaw(path: java.nio.file.Path): String = try {
+      val v = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())
+      v?.refresh(true, false)
+      if (v != null) com.intellij.openapi.vfs.VfsUtilCore.loadText(v) else java.nio.file.Files.readString(path)
+    } catch (_: Throwable) { java.nio.file.Files.readString(path) }
+
+    fun replaceEntryByKey(path: java.nio.file.Path, key: String, transform: (net.samcaldwell.latex.bibtex.BibNode.Entry, MutableMap<String, String>) -> BibLibraryService.BibEntry?): Boolean {
+      try {
+        val raw = loadRaw(path)
+        val parser = net.samcaldwell.latex.bibtex.BibParser(raw)
+        val parsed = parser.parse()
+        val strings = mutableMapOf<String, String>()
+        for (n in parsed.file.nodes) if (n is net.samcaldwell.latex.bibtex.BibNode.StringDirective) strings[n.name] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(n.value, strings)
+        val entry = parsed.file.nodes.filterIsInstance<net.samcaldwell.latex.bibtex.BibNode.Entry>().firstOrNull { it.key == key } ?: return false
+        val svc = project.getService(BibLibraryService::class.java)
+        val fieldMap = linkedMapOf<String, String>()
+        entry.fields.forEach { f -> fieldMap[f.name.lowercase()] = net.samcaldwell.latex.bibtex.BibParser.flattenValueWith(f.value, strings) }
+        val newEntry = transform(entry, fieldMap) ?: return false
+        val entryText = svc.serializeEntryAlpha(newEntry)
+        val start = entry.headerOffset
+        val src = parser.javaClass.getDeclaredField("source").apply { isAccessible = true }.get(parser) as String
+        var i = start
+        while (i < src.length && src[i] != '{' && src[i] != '(') i++
+        if (i >= src.length) return false
+        val open = src[i]
+        val close = if (open == '{') '}' else ')'
+        var j = i + 1
+        var depth = 0
+        while (j < src.length) {
+          val c = src[j]
+          if (c == open) depth++ else if (c == close) { if (depth == 0) { j++; break } else depth-- }
+          j++
+        }
+        val before = src.substring(0, start)
+        val after = src.substring(j)
+        val updated = before + entryText + after
+        java.nio.file.Files.writeString(path, updated, java.nio.charset.StandardCharsets.UTF_8)
+        com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(path.toFile())?.refresh(false, false)
+        return true
+      } catch (t: Throwable) {
+        return false
+      }
+    }
+
+    fun quickWrapBraces(issue: VerifyIssue) {
+      val key = issue.entryKey ?: return
+      val field = issue.field?.lowercase() ?: return
+      val svc = project.getService(BibLibraryService::class.java)
+      val path = svc.ensureLibraryExists() ?: return
+      if (replaceEntryByKey(path, key) { entry, fields ->
+          val v = fields[field] ?: return@replaceEntryByKey null
+          fields[field] = v
+          BibLibraryService.BibEntry(entry.type, entry.key, fields)
+        }) {
+        javax.swing.SwingUtilities.invokeLater { runVerifyAndPopulate() }
+      }
+    }
+
+    fun quickCopyDoiToNumber(issue: VerifyIssue) {
+      val key = issue.entryKey ?: return
+      val svc = project.getService(BibLibraryService::class.java)
+      val path = svc.ensureLibraryExists() ?: return
+      if (replaceEntryByKey(path, key) { entry, fields ->
+          if (entry.type.lowercase() != "patent") return@replaceEntryByKey null
+          val number = fields["number"]?.trim().orEmpty()
+          val doi = fields["doi"]?.trim().orEmpty()
+          if (number.isNotEmpty() || doi.isEmpty()) return@replaceEntryByKey null
+          fields["number"] = doi
+          BibLibraryService.BibEntry(entry.type, entry.key, fields)
+        }) {
+        javax.swing.SwingUtilities.invokeLater { runVerifyAndPopulate() }
+      }
+    }
+
+    fun quickAddMissingFields(issue: VerifyIssue) {
+      val key = issue.entryKey ?: return
+      val svc = project.getService(BibLibraryService::class.java)
+      val path = svc.ensureLibraryExists() ?: return
+      if (replaceEntryByKey(path, key) { entry, fields ->
+          val req = try {
+            val m = svc.javaClass.getDeclaredMethod("requiredKeysForType", String::class.java)
+            m.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            m.invoke(svc, entry.type) as Set<String>
+          } catch (_: Throwable) { emptySet() }
+          val missing = req.filter { (fields[it]?.trim().isNullOrEmpty()) }.toMutableSet()
+          if (entry.type.lowercase() == "patent") {
+            if (missing.contains("number") && !fields["doi"].isNullOrBlank()) missing.remove("number")
+            if ((fields["year"].isNullOrBlank()) && (fields["date"].isNullOrBlank())) missing.add("year")
+          }
+          if (missing.isEmpty()) return@replaceEntryByKey null
+          for (k in missing) {
+            when (k.lowercase()) {
+              "year" -> fields[k] = "n.d."
+              else -> fields[k] = ""
+            }
+          }
+          BibLibraryService.BibEntry(entry.type, entry.key, fields)
+        }) {
+        javax.swing.SwingUtilities.invokeLater { runVerifyAndPopulate() }
+      }
+    }
+
+    btnWrapBraces.addActionListener {
+      val idx = validationList.selectedIndex
+      if (idx >= 0 && idx < validationModel.size()) quickWrapBraces(validationModel.getElementAt(idx))
+    }
+    btnCopyDoiToNumber.addActionListener {
+      val idx = validationList.selectedIndex
+      if (idx >= 0 && idx < validationModel.size()) quickCopyDoiToNumber(validationModel.getElementAt(idx))
+    }
+    btnAddMissingFields.addActionListener {
+      val idx = validationList.selectedIndex
+      if (idx >= 0 && idx < validationModel.size()) quickAddMissingFields(validationModel.getElementAt(idx))
     }
 
     fun reformatBibliography() {
