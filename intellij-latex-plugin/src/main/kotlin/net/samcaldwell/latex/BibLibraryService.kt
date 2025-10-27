@@ -26,21 +26,13 @@ import java.io.ByteArrayInputStream
   private val log = Logger.getInstance(BibLibraryService::class.java)
 
   companion object {
-    val ALLOWED_BIBLATEX_TYPES: Set<String> = setOf(
-      // Core + extended
-      "article", "book", "mvbook", "inbook", "bookinbook", "suppbook",
-      "booklet", "collection", "mvcollection", "incollection", "suppcollection",
-      "dataset", "manual", "misc", "online", "patent", "periodical", "suppperiodical",
-      "proceedings", "mvproceedings", "inproceedings", "reference", "mvreference", "inreference",
-      "report", "set", "software", "thesis", "unpublished", "xdata",
-      // Aliases/synonyms commonly encountered (normalized via normalizeType)
-      "conference", "electronic", "mastersthesis", "phdthesis", "techreport",
-      // Custom types
-      "customa", "customb", "customc", "customd", "custome", "customf",
-      // Additional domain-specific types accepted
-      "artwork", "audio", "bibnote", "commentary", "image", "jurisdiction", "legislation", "legal",
-      "letter", "movie", "music", "performance", "review", "standard", "video"
-    )
+    val ALLOWED_BIBLATEX_TYPES: Set<String> = run {
+      val core = net.samcaldwell.latex.bibtex.BiblatexModel.allowedTypes
+      val synonyms = setOf("conference", "electronic", "mastersthesis", "phdthesis", "techreport")
+      val customs = setOf("customa","customb","customc","customd","custome","customf")
+      val domains = setOf("artwork","audio","bibnote","commentary","image","jurisdiction","legislation","legal","letter","movie","music","performance","review","standard","video")
+      (core + synonyms + customs + domains)
+    }
     val NONENTRY_DIRECTIVES: Set<String> = setOf("string", "preamble", "comment")
   }
 
@@ -157,6 +149,26 @@ import java.io.ByteArrayInputStream
     }
 
     for (k in required) if (!has(k)) err(k, "Missing required field: $k")
+
+    // Enforce AnyOf groups from the model (e.g., year|date, author|editor)
+    run {
+      val spec = net.samcaldwell.latex.bibtex.BiblatexModel.getSpec(t)
+      if (spec != null) {
+        for (req in spec.requirements) when (req) {
+          is net.samcaldwell.latex.bibtex.BiblatexModel.Requirement.AnyOf -> {
+            val ok = req.fields.any { has(it) }
+            if (!ok) err(req.fields.joinToString("|"), "Missing at least one of: ${req.fields.joinToString(", ")}")
+          }
+          else -> {}
+        }
+        // Schema-driven recommendations
+        for (r in spec.recommended) {
+          if (!has(r)) warn(r, "Recommended field is missing: $r")
+        }
+        // Contextual recommendations: if url present, urldate recommended
+        if (has("url") && !has("urldate")) warn("urldate", "Recommended: add 'urldate' to record when 'url' is present")
+      }
+    }
 
     // Patent-specific required fields: number and one of year/date
     if (t == "patent") {
@@ -1642,49 +1654,13 @@ import java.io.ByteArrayInputStream
     else -> t.lowercase().trim()
   }
 
-  // Required fields per biblatex-ish schema (approximate; extend as needed)
-  private val TYPE_REQUIRED: Map<String, Set<String>> = mapOf(
-    "article" to setOf("author", "title", "journaltitle", "year"),
-    "book" to setOf("author", "title", "publisher", "year"),
-    "mvbook" to setOf("title", "year"),
-    "inbook" to setOf("author", "title", "booktitle", "year"),
-    "bookinbook" to setOf("author", "title", "booktitle", "year"),
-    "suppbook" to setOf("title", "year"),
-    "booklet" to setOf("title"),
-    "collection" to setOf("title", "year"),
-    "mvcollection" to setOf("title", "year"),
-    "incollection" to setOf("author", "title", "booktitle", "year"),
-    "suppcollection" to setOf("title", "year"),
-    "dataset" to setOf("title", "year"),
-    "manual" to setOf("title"),
-    "misc" to emptySet(),
-    "online" to setOf("title", "url"),
-    "patent" to setOf("author", "title"), // plus number and year/date enforced below
-    "periodical" to setOf("title", "year"),
-    "suppperiodical" to setOf("title", "year"),
-    "proceedings" to setOf("title", "year"),
-    "mvproceedings" to setOf("title", "year"),
-    "inproceedings" to setOf("author", "title", "booktitle", "year"),
-    "reference" to setOf("title", "year"),
-    "mvreference" to setOf("title", "year"),
-    "inreference" to setOf("author", "title", "booktitle", "year"),
-    "report" to setOf("title", "author", "year", "institution"),
-    "set" to setOf("title"),
-    "software" to setOf("title"),
-    "thesis" to setOf("author", "title", "year", "institution"),
-    "mastersthesis" to setOf("author", "title", "year", "institution"),
-    "phdthesis" to setOf("author", "title", "year", "institution"),
-    "unpublished" to setOf("author", "title", "note", "year"),
-    "xdata" to emptySet(),
-    // Accept custom and domain-specific types with minimal constraints
-    "customa" to setOf("title"), "customb" to setOf("title"), "customc" to setOf("title"),
-    "customd" to setOf("title"), "custome" to setOf("title"), "customf" to setOf("title"),
-    "artwork" to setOf("title"), "audio" to setOf("title"), "bibnote" to setOf("title"),
-    "commentary" to setOf("title"), "image" to setOf("title"), "jurisdiction" to setOf("title", "year"),
-    "legislation" to setOf("title", "year"), "legal" to setOf("title", "year"), "letter" to setOf("title", "year"),
-    "movie" to setOf("title", "year"), "music" to setOf("title", "year"), "performance" to setOf("title", "year"),
-    "review" to setOf("title", "year"), "standard" to setOf("title", "year"), "video" to setOf("title", "year")
-  )
+  // Minimal required set derivation from the biblatex model (AllOf-only; AnyOf handled in validateEntryDetailed)
+  private val TYPE_REQUIRED: Map<String, Set<String>> = net.samcaldwell.latex.bibtex.BiblatexModel.allowedTypes.associateWith { t ->
+    val sp = net.samcaldwell.latex.bibtex.BiblatexModel.getSpec(t)
+    if (sp == null) emptySet() else sp.requirements.filterIsInstance<net.samcaldwell.latex.bibtex.BiblatexModel.Requirement.AllOf>()
+      .flatMap { it.fields.asIterable() }
+      .toSet()
+  }
 
   // Returns a pair of (fileType, entrySubType?) mapped to the strict BibLaTeX set.
   // If the given type is not one of the allowed types, we serialize as @misc and
